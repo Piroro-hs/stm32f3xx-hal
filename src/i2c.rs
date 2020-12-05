@@ -21,6 +21,7 @@ use crate::{
 };
 
 use cfg_if::cfg_if;
+use cortex_m::asm;
 
 /// I2C error
 #[derive(Debug)]
@@ -192,6 +193,21 @@ impl<I2C, SCL, SDA> I2c<I2C, (SCL, SDA)> {
     /// Releases the I2C peripheral and associated pins
     pub fn free(self) -> (I2C, (SCL, SDA)) {
         (self.i2c, self.pins)
+    }
+}
+
+impl<I2C, PINS> I2c<I2C, PINS>
+where
+    I2C: Instance,
+{
+    /// Clear peripheral internal state machines and status bits
+    pub fn clear(&mut self) {
+        self.i2c.cr1.modify(|_, w| w.pe().disabled());
+
+        // Wait at least 3 APB clock cycles (APB1 prescaler maximal value is 16)
+        asm::delay(3 * 16);
+
+        self.i2c.cr1.modify(|_, w| w.pe().enabled());
     }
 }
 
