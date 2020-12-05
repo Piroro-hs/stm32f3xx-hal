@@ -128,7 +128,7 @@ impl<I2C, SCL, SDA> I2c<I2C, (SCL, SDA)> {
         //
         // t_SYNC1 + t_SYNC2 > 4 * t_I2CCLK
         // t_SCL ~= t_SYNC1 + t_SYNC2 + t_SCLL + t_SCLH
-        let i2cclk = I2C::clock(&clocks).0;
+        let i2cclk = I2C::clock(clocks).0;
         let ratio = i2cclk / freq - 4;
         let (presc, scll, sclh, sdadel, scldel) = if freq >= 100_000 {
             // fast-mode or fast-mode plus
@@ -176,16 +176,11 @@ impl<I2C, SCL, SDA> I2c<I2C, (SCL, SDA)> {
         // Configure for "fast mode" (400 KHz)
         // NOTE(write): writes all non-reserved bits.
         i2c.timingr.write(|w| {
-            w.presc()
-                .bits(presc as u8)
-                .sdadel()
-                .bits(sdadel as u8)
-                .scldel()
-                .bits(scldel as u8)
-                .scll()
-                .bits(scll)
-                .sclh()
-                .bits(sclh)
+            w.presc().bits(presc as u8);
+            w.scldel().bits(scldel as u8);
+            w.sdadel().bits(sdadel as u8);
+            w.sclh().bits(sclh);
+            w.scll().bits(scll)
         });
 
         // Enable the peripheral
@@ -431,7 +426,7 @@ pub unsafe trait Instance: Deref<Target = RegisterBlock> {
     #[doc(hidden)]
     fn enable_clock(apb1: &mut APB1);
     #[doc(hidden)]
-    fn clock(clocks: &Clocks) -> Hertz;
+    fn clock(clocks: Clocks) -> Hertz;
 }
 
 macro_rules! i2c {
@@ -444,7 +439,7 @@ macro_rules! i2c {
                     apb1.rstr().modify(|_, w| w.$i2cXrst().clear_bit());
                 }
 
-                fn clock(clocks: &Clocks) -> Hertz {
+                fn clock(clocks: Clocks) -> Hertz {
                     // NOTE(unsafe) atomic read with no side effects
                     match unsafe { (*RCC::ptr()).cfgr3.read().$i2cXsw().variant() } {
                         I2C1SW_A::HSI => 8.mhz().into(),
