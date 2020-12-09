@@ -1,4 +1,8 @@
 //! Inter-Integrated Circuit (I2C) bus
+//!
+//! A usage example of the i2c peripheral can be found at [examples/i2c_scanner.rs]
+//!
+//! [examples/i2c_scanner.rs]: https://github.com/stm32-rs/stm32f3xx-hal/blob/v0.5.0/examples/i2c_scanner.rs
 
 use core::convert::TryFrom;
 use core::ops::Deref;
@@ -117,7 +121,7 @@ impl<I2C, SCL, SDA> I2c<I2C, (SCL, SDA)> {
     {
         let freq = freq.into().0;
 
-        assert!(freq <= 1_000_000);
+        crate::assert!(freq <= 1_000_000);
 
         I2C::enable_clock(apb1);
 
@@ -168,11 +172,11 @@ impl<I2C, SCL, SDA> I2c<I2C, (SCL, SDA)> {
             (presc, scll, sclh, sdadel, scldel)
         };
 
-        assert!(presc < 16);
-        assert!(scldel < 16);
-        assert!(sdadel < 16);
-        let sclh = u8::try_from(sclh).unwrap();
-        let scll = u8::try_from(scll).unwrap();
+        crate::assert!(presc < 16);
+        crate::assert!(scldel < 16);
+        crate::assert!(sdadel < 16);
+        let sclh = crate::unwrap!(u8::try_from(sclh).ok());
+        let scll = crate::unwrap!(u8::try_from(scll).ok());
 
         // Configure for "fast mode" (400 KHz)
         // NOTE(write): writes all non-reserved bits.
@@ -218,7 +222,7 @@ where
     type Error = Error;
 
     fn read(&mut self, addr: u8, buffer: &mut [u8]) -> Result<(), Self::Error> {
-        assert!(!buffer.is_empty());
+        crate::assert!(!buffer.is_empty());
 
         // Detect Bus busy
         if self.i2c.isr.read().busy().is_busy() {
@@ -346,7 +350,7 @@ where
     type Error = Error;
 
     fn write_read(&mut self, addr: u8, bytes: &[u8], buffer: &mut [u8]) -> Result<(), Error> {
-        assert!(!bytes.is_empty() && !buffer.is_empty());
+        crate::assert!(!bytes.is_empty() && !buffer.is_empty());
 
         // Detect Bus busy
         if self.i2c.isr.read().busy().is_busy() {

@@ -1,4 +1,8 @@
 //! Serial Peripheral Interface (SPI) bus
+//!
+//! A usage example of the can peripheral can be found at [examples/spi.rs]
+//!
+//! [examples/spi.rs]: https://github.com/stm32-rs/stm32f3xx-hal/blob/v0.5.0/examples/spi.rs
 
 use core::ptr;
 
@@ -381,7 +385,11 @@ unsafe impl MosiPin<SPI4> for PE6<AF5> {}
 ))]
 unsafe impl MosiPin<SPI4> for PE14<AF5> {}
 
+/// Configuration trait for the Word Size
+/// used by the SPI peripheral
 pub trait Word {
+    /// Returns the register configuration
+    /// to set the word size
     fn register_config() -> (FRXTH_A, DS_A);
 }
 
@@ -498,7 +506,7 @@ macro_rules! hal {
                 fn compute_baud_rate(clocks: Hertz, freq: Hertz) -> spi1::cr1::BR_A {
                     use spi1::cr1::BR_A;
                     match clocks.0 / freq.0 {
-                        0 => unreachable!(),
+                        0 => crate::unreachable!(),
                         1..=2 => BR_A::DIV2,
                         3..=5 => BR_A::DIV4,
                         6..=11 => BR_A::DIV8,
