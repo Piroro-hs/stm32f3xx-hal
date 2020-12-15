@@ -31,15 +31,12 @@
 use core::convert::Infallible;
 use core::marker::PhantomData;
 
+use crate::{hal::digital::v2::OutputPin, rcc::AHB};
+
 #[cfg(feature = "unproven")]
-use crate::hal::digital::v2::toggleable;
-#[cfg(feature = "unproven")]
-use crate::hal::digital::v2::InputPin;
-#[cfg(feature = "unproven")]
-use crate::hal::digital::v2::OutputPin;
-#[cfg(feature = "unproven")]
-use crate::hal::digital::v2::StatefulOutputPin;
-use crate::rcc::AHB;
+use crate::hal::digital::v2::{toggleable, InputPin, StatefulOutputPin};
+
+use typenum::Unsigned;
 
 /// Extension trait to split a GPIO peripheral in independent pins and registers
 pub trait GpioExt {
@@ -48,6 +45,52 @@ pub trait GpioExt {
 
     /// Splits the GPIO block into independent pins and registers
     fn split(self, ahb: &mut AHB) -> Self::Parts;
+}
+
+pub trait GpioRegExt {
+    fn is_low(&self, i: u8) -> bool;
+    fn is_set_low(&self, i: u8) -> bool;
+    fn set_high(&self, i: u8);
+    fn set_low(&self, i: u8);
+}
+
+pub trait Moder {
+    fn input(&mut self, i: u8);
+    fn output(&mut self, i: u8);
+    fn alternate(&mut self, i: u8);
+    fn analog(&mut self, i: u8);
+}
+
+pub trait Otyper {
+    fn push_pull(&mut self, i: u8);
+    fn open_drain(&mut self, i: u8);
+}
+
+pub trait Pupdr {
+    fn floating(&mut self, i: u8);
+    fn pull_up(&mut self, i: u8);
+    fn pull_down(&mut self, i: u8);
+}
+
+pub trait Afr {
+    fn afx(&mut self, i: u8, x: u8);
+}
+
+pub trait Gpio {
+    type Reg: GpioRegExt + ?Sized;
+
+    fn ptr(&self) -> *const Self::Reg;
+}
+
+pub trait GpioMode {
+    type MODER: Moder;
+    type OTYPER: Otyper;
+    type PUPDR: Pupdr;
+}
+
+/// Marker trait for pin index
+pub trait Index {
+    fn index(&self) -> u8;
 }
 
 /// Input mode (type state)
@@ -75,214 +118,432 @@ pub struct OpenDrain;
 /// Analog mode (type state)
 pub struct Analog;
 
-/// Alternate function 0 (type state)
-pub struct AF0;
+macro_rules! af {
+    ($i:literal, $AFi:ident, $IntoAfi:ident, $into_afi:ident) => {
+        paste::paste! {
+            #[doc = "Alternate function " $i " (type state)"]
+            pub struct $AFi;
+        }
 
-/// Alternate function 1 (type state)
-pub struct AF1;
+        pub trait $IntoAfi {
+            type AFR: Afr;
+        }
 
-/// Alternate function 2 (type state)
-pub struct AF2;
+        impl<GPIO, INDEX, MODE> Pin<GPIO, INDEX, MODE>
+        where
+            Self: $IntoAfi,
+            GPIO: GpioMode,
+            INDEX: Index,
+        {
+            paste::paste! {
+                #[doc = "Configures the pin to serve as alternate function: " $AFi]
+                pub fn $into_afi(
+                    self,
+                    moder: &mut GPIO::MODER,
+                    afr: &mut <Self as $IntoAfi>::AFR,
+                ) -> Pin<GPIO, INDEX, $AFi> {
+                    moder.alternate(self.index.index());
+                    afr.afx(self.index.index(), $i);
+                    Pin {
+                        gpio: self.gpio,
+                        index:self.index,
+                        _mode: PhantomData
+                    }
+                }
+            }
+        }
+    };
 
-/// Alternate function 3 (type state)
-pub struct AF3;
+    ([$($i:literal),+ $(,)?]) => {
+        paste::paste! {
+            $(
+                af!($i, [<AF $i>], [<IntoAf $i>], [<into_af $i>]);
+            )+
+        }
+    };
+}
 
-/// Alternate function 4 (type state)
-pub struct AF4;
+af!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
 
-/// Alternate function 5 (type state)
-pub struct AF5;
+pub struct Gpiox {
+    ptr: *const dyn GpioRegExt,
+}
 
-/// Alternate function 6 (type state)
-pub struct AF6;
+impl Gpio for Gpiox {
+    type Reg = dyn GpioRegExt;
 
-/// Alternate function 7 (type state)
-pub struct AF7;
+    fn ptr(&self) -> *const Self::Reg {
+        self.ptr
+    }
+}
 
-/// Alternate function 8 (type state)
-pub struct AF8;
+pub struct Ux(u8);
 
-/// Alternate function 9 (type state)
-pub struct AF9;
+impl Index for Ux {
+    fn index(&self) -> u8 {
+        self.0
+    }
+}
 
-/// Alternate function 10 (type state)
-pub struct AF10;
+impl<U> Index for U
+where
+    U: Unsigned,
+{
+    fn index(&self) -> u8 {
+        Self::U8
+    }
+}
 
-/// Alternate function 11 (type state)
-pub struct AF11;
+pub struct Pin<GPIO, INDEX, MODE> {
+    gpio: GPIO,
+    index: INDEX,
+    _mode: PhantomData<MODE>,
+}
 
-/// Alternate function 12 (type state)
-pub struct AF12;
+/// Marker trait indicates readable gpio mode
+pub trait Readable {}
 
-/// Alternate function 13 (type state)
-pub struct AF13;
+impl<MODE> Readable for Input<MODE> {}
+impl Readable for Output<OpenDrain> {}
 
-/// Alternate function 14 (type state)
-pub struct AF14;
+impl<GPIO, INDEX, MODE> OutputPin for Pin<GPIO, INDEX, Output<MODE>>
+where
+    GPIO: Gpio,
+    INDEX: Index,
+{
+    type Error = Infallible;
 
-/// Alternate function 15 (type state)
-pub struct AF15;
+    fn set_high(&mut self) -> Result<(), Self::Error> {
+        unsafe { (*self.gpio.ptr()).set_high(self.index.index()) };
+        Ok(())
+    }
+
+    fn set_low(&mut self) -> Result<(), Self::Error> {
+        unsafe { (*self.gpio.ptr()).set_low(self.index.index()) };
+        Ok(())
+    }
+}
+
+#[cfg(feature = "unproven")]
+impl<GPIO, INDEX, MODE> InputPin for Pin<GPIO, INDEX, MODE>
+where
+    GPIO: Gpio,
+    INDEX: Index,
+    MODE: Readable,
+{
+    type Error = Infallible;
+
+    fn is_high(&self) -> Result<bool, Self::Error> {
+        Ok(!self.is_low()?)
+    }
+
+    fn is_low(&self) -> Result<bool, Self::Error> {
+        Ok(unsafe { (*self.gpio.ptr()).is_low(self.index.index()) })
+    }
+}
+
+#[cfg(feature = "unproven")]
+impl<GPIO, INDEX, MODE> StatefulOutputPin for Pin<GPIO, INDEX, Output<MODE>>
+where
+    GPIO: Gpio,
+    INDEX: Index,
+{
+    fn is_set_high(&self) -> Result<bool, Self::Error> {
+        Ok(!self.is_set_low()?)
+    }
+
+    fn is_set_low(&self) -> Result<bool, Self::Error> {
+        Ok(unsafe { (*self.gpio.ptr()).is_set_low(self.index.index()) })
+    }
+}
+
+#[cfg(feature = "unproven")]
+impl<GPIO, INDEX, MODE> toggleable::Default for Pin<GPIO, INDEX, Output<MODE>>
+where
+    GPIO: Gpio,
+    INDEX: Index,
+{
+}
+
+impl<GPIO, INDEX, MODE> Pin<GPIO, INDEX, MODE>
+where
+    GPIO: GpioMode,
+    INDEX: Index,
+{
+    /// Configures the pin to operate as a floating input pin
+    pub fn into_floating_input(
+        self,
+        moder: &mut GPIO::MODER,
+        pupdr: &mut GPIO::PUPDR,
+    ) -> Pin<GPIO, INDEX, Input<Floating>> {
+        moder.input(self.index.index());
+        pupdr.floating(self.index.index());
+        Pin {
+            gpio: self.gpio,
+            index: self.index,
+            _mode: PhantomData,
+        }
+    }
+
+    /// Configures the pin to operate as a pulled down input pin
+    pub fn into_pull_down_input(
+        self,
+        moder: &mut GPIO::MODER,
+        pupdr: &mut GPIO::PUPDR,
+    ) -> Pin<GPIO, INDEX, Input<PullDown>> {
+        moder.input(self.index.index());
+        pupdr.pull_down(self.index.index());
+        Pin {
+            gpio: self.gpio,
+            index: self.index,
+            _mode: PhantomData,
+        }
+    }
+
+    /// Configures the pin to operate as a pulled up input pin
+    pub fn into_pull_up_input(
+        self,
+        moder: &mut GPIO::MODER,
+        pupdr: &mut GPIO::PUPDR,
+    ) -> Pin<GPIO, INDEX, Input<PullUp>> {
+        moder.input(self.index.index());
+        pupdr.pull_up(self.index.index());
+        Pin {
+            gpio: self.gpio,
+            index: self.index,
+            _mode: PhantomData,
+        }
+    }
+
+    /// Configures the pin to operate as an open drain output pin
+    pub fn into_open_drain_output(
+        self,
+        moder: &mut GPIO::MODER,
+        otyper: &mut GPIO::OTYPER,
+    ) -> Pin<GPIO, INDEX, Output<OpenDrain>> {
+        moder.output(self.index.index());
+        otyper.open_drain(self.index.index());
+        Pin {
+            gpio: self.gpio,
+            index: self.index,
+            _mode: PhantomData,
+        }
+    }
+
+    /// Configures the pin to operate as an push pull output pin
+    pub fn into_push_pull_output(
+        self,
+        moder: &mut GPIO::MODER,
+        otyper: &mut GPIO::OTYPER,
+    ) -> Pin<GPIO, INDEX, Output<PushPull>> {
+        moder.output(self.index.index());
+        otyper.push_pull(self.index.index());
+        Pin {
+            gpio: self.gpio,
+            index: self.index,
+            _mode: PhantomData,
+        }
+    }
+}
+
+impl<GPIO, INDEX> Pin<GPIO, INDEX, Output<OpenDrain>>
+where
+    GPIO: GpioMode,
+    INDEX: Index,
+{
+    /// Enables / disables the internal pull up
+    pub fn internal_pull_up(&mut self, pupdr: &mut GPIO::PUPDR, on: bool) {
+        if on {
+            pupdr.pull_up(self.index.index());
+        } else {
+            pupdr.floating(self.index.index());
+        }
+    }
+}
+
+impl<GPIO, INDEX, MODE> Pin<GPIO, INDEX, MODE>
+where
+    // GPIO: Gpio + GpioMode,
+    GPIO: Gpio,
+    GPIO::Reg: 'static + Sized,
+    INDEX: Unsigned,
+{
+    /// Erases the pin number from the type
+    ///
+    /// This is useful when you want to collect the pins into an array where you
+    /// need all the elements to have the same type
+    pub fn downgrade(self) -> Pin<GPIO, Ux, MODE> {
+        Pin {
+            gpio: self.gpio,
+            index: Ux(INDEX::U8),
+            _mode: self._mode,
+        }
+    }
+}
+
+impl<GPIO, MODE> Pin<GPIO, Ux, MODE>
+where
+    // GPIO: Gpio + GpioMode,
+    GPIO: Gpio,
+    GPIO::Reg: 'static + Sized,
+{
+    /// Erases the port letter from the type
+    ///
+    /// This is useful when you want to collect the pins into an array where you
+    /// need all the elements to have the same type
+    pub fn downgrade(self) -> PXx<MODE> {
+        PXx {
+            gpio: Gpiox {
+                ptr: self.gpio.ptr(),
+            },
+            index: self.index,
+            _mode: self._mode,
+        }
+    }
+}
+
+/// Fully erased pin
+///
+/// This moves the pin type information to be known
+/// at runtime, and erases the specific compile time type of the GPIO.
+/// It does only matter, that it is a GPIO pin with a specific MODE.
+///
+/// See [examples/gpio_erased.rs] as an example.
+///
+/// [examples/gpio_erased.rs]: https://github.com/stm32-rs/stm32f3xx-hal/blob/v0.5.0/examples/gpio_erased.rs
+pub type PXx<MODE> = Pin<Gpiox, Ux, MODE>;
+
+macro_rules! gpio_trait {
+    ([$($gpioy:ident),+ $(,)?]) => {
+        $(
+            impl GpioRegExt for crate::pac::$gpioy::RegisterBlock {
+                fn is_low(&self, i: u8) -> bool {
+                    // NOTE(unsafe) atomic read with no side effects
+                    self.idr.read().bits() & (1 << i) == 0
+                }
+
+                fn is_set_low(&self, i: u8) -> bool {
+                    // NOTE(unsafe) atomic read with no side effects
+                    self.odr.read().bits() & (1 << i) == 0
+                }
+
+                fn set_high(&self, i: u8) {
+                    // NOTE(unsafe, write) atomic write to a stateless register
+                    unsafe { self.bsrr.write(|w| w.bits(1 << i)); }
+                }
+
+                fn set_low(&self, i: u8) {
+                    // NOTE(unsafe, write) atomic write to a stateless register
+                    unsafe { self.bsrr.write(|w| w.bits(1 << (16 + i))); }
+                }
+            }
+        )+
+    }
+}
+
+#[cfg(not(feature = "gpio-f373"))]
+gpio_trait!([gpioa, gpiob, gpioc]);
+
+#[cfg(feature = "gpio-f373")]
+gpio_trait!([gpioa, gpiob, gpioc, gpiod]);
+
+macro_rules! afr_trait {
+    ($GPIOX:ident, $AFR:ident, $afr:ident, $offset:expr) => {
+        impl Afr for $AFR {
+            fn afx(&mut self, i: u8, x: u8) {
+                let i = i - $offset;
+                unsafe {
+                    (*$GPIOX::ptr()).$afr.modify(|r, w| {
+                        w.bits(r.bits() & !(u32::MAX >> 32 - 4 << 4 * i) | (x as u32) << 4 * i)
+                    });
+                }
+            }
+        }
+    }
+}
+
+macro_rules! r_trait {
+    (
+        ($GPIOX:ident, $gpioy:ident::$xr:ident::$enum:ident, $bits:expr);
+        impl $Xr:ident for $XR:ident {
+            $(
+                fn $fn:ident { $VARIANT:ident }
+            )+
+        }
+    ) => {
+        impl $Xr for $XR {
+            $(
+                fn $fn(&mut self, i: u8) {
+                    unsafe {
+                        (*$GPIOX::ptr()).$xr.modify(|r, w| {
+                            w.bits(
+                                r.bits() & !(u32::MAX >> 32 - $bits << $bits * i)
+                                    | ($gpioy::$xr::$enum::$VARIANT as u32) << $bits * i
+                            )
+                        });
+                    }
+                }
+            )+
+        }
+    }
+}
 
 macro_rules! gpio {
     ([
         $({
             GPIO: $GPIOX:ident,
             gpio: $gpiox:ident,
+            Gpio: $Gpiox:ident,
             gpio_mapped: $gpioy:ident,
             gpio_mapped_ioenr: $iopxenr:ident,
             gpio_mapped_iorst: $iopxrst:ident,
             partially_erased_pin: $PXx:ident,
             pins: [
-                $($PXi:ident: (
-                    $pxi:ident, $i:expr, $MODE:ty, $moderi:ident, $AFR:ident, $afri:ident,
-                    $bsi:ident, $bri:ident, $odri:ident, $idri:ident, $pupdri:ident, $oti:ident,
-                    { $( $AFi:ty: ($into_afi:ident, $afi:ident), )* },
-                ),)+
+                $({
+                    $PXi:ident: (
+                        $pxi:ident, $Ui:ident, $MODE:ty, $AFR:ident, [$($IntoAfi:ident),*],
+                    ),
+                })+
             ],
         },)+
     ]) => {
-        $( use crate::pac::$GPIOX; )+
-
-
-        /// GPIO discriminator enum.
-        ///
-        /// Use to store the gpio bank, when using
-        /// fully erased pins [`PXx`]
-        pub enum Gpio {
-            $(
-                /// GPIO Bank
-                $GPIOX,
-            )+
-        }
-
-        /// Fully erased pin
-        ///
-        /// This moves the pin type information to be known
-        /// at runtime, and erases the specific compile time type of the GPIO.
-        /// It does only matter, that it is a GPIO pin with a specific MODE.
-        ///
-        /// See [examples/gpio_erased.rs] as an example.
-        ///
-        /// [examples/gpio_erased.rs]: https://github.com/stm32-rs/stm32f3xx-hal/blob/v0.5.0/examples/gpio_erased.rs
-        pub struct PXx<MODE> {
-            i: u8,
-            gpio: Gpio,
-            _mode: PhantomData<MODE>,
-        }
-
-        impl<MODE> OutputPin for PXx<Output<MODE>> {
-            type Error = Infallible;
-
-            fn set_high(&mut self) -> Result<(), Self::Error> {
-                // NOTE(unsafe, write) atomic write to a stateless register
-                unsafe {
-                    match &self.gpio {
-                        $(
-                            Gpio::$GPIOX => (*$GPIOX::ptr()).bsrr.write(|w| w.bits(1 << self.i)),
-                        )+
-                    }
-                }
-                Ok(())
-            }
-
-            fn set_low(&mut self) -> Result<(), Self::Error> {
-                // NOTE(unsafe, write) atomic write to a stateless register
-                unsafe {
-                    match &self.gpio {
-                        $(
-                            Gpio::$GPIOX => (*$GPIOX::ptr()).bsrr.write(|w| w.bits(1 << (16 + self.i))),
-                        )+
-                    }
-                }
-                Ok(())
-            }
-        }
-
-        #[cfg(feature = "unproven")]
-        impl<MODE> InputPin for PXx<Input<MODE>> {
-            type Error = Infallible;
-
-            fn is_high(&self) -> Result<bool, Self::Error> {
-                Ok(!self.is_low()?)
-            }
-
-             fn is_low(&self) -> Result<bool, Self::Error> {
-                // NOTE(unsafe) atomic read with no side effects
-                Ok(unsafe {
-                    match &self.gpio {
-                        $(
-                            Gpio::$GPIOX => (*$GPIOX::ptr()).idr.read().bits() & (1 << self.i) == 0,
-                        )+
-                    }
-                })
-            }
-        }
-
-        #[cfg(feature = "unproven")]
-        impl InputPin for PXx<Output<OpenDrain>> {
-            type Error = Infallible;
-
-            fn is_high(&self) -> Result<bool, Self::Error> {
-                Ok(!self.is_low()?)
-            }
-
-             fn is_low(&self) -> Result<bool, Self::Error> {
-                // NOTE(unsafe) atomic read with no side effects
-                Ok(unsafe {
-                    match &self.gpio {
-                        $(
-                            Gpio::$GPIOX => (*$GPIOX::ptr()).idr.read().bits() & (1 << self.i) == 0,
-                        )+
-                    }
-                })
-            }
-        }
-
-        #[cfg(feature = "unproven")]
-        impl <MODE> StatefulOutputPin for PXx<Output<MODE>> {
-            fn is_set_high(&self) -> Result<bool, Self::Error> {
-                self.is_set_low().map(|b| !b)
-            }
-
-            fn is_set_low(&self) -> Result<bool, Self::Error> {
-                // NOTE(unsafe) atomic read with no side effects
-                Ok(unsafe {
-                    match &self.gpio {
-                        $(
-                            Gpio::$GPIOX => (*$GPIOX::ptr()).odr.read().bits() & (1 << self.i) == 0,
-                        )+
-                    }
-                })
-            }
-        }
-
-        #[cfg(feature = "unproven")]
-        impl <MODE> toggleable::Default for PXx<Output<MODE>> {}
-
         $(
-            doc_comment::doc_comment!{
-                concat!("All Pins and associated functions for GPIO Bank: ", stringify!($GPIOX)),
+            use crate::pac::$GPIOX;
+
+            pub struct $Gpiox;
+
+            impl Gpio for $Gpiox {
+                type Reg = crate::pac::$gpioy::RegisterBlock;
+
+                fn ptr(&self) -> *const Self::Reg {
+                    $GPIOX::ptr()
+                }
+            }
+
+            paste::paste!{
+                #[doc = "All Pins and associated functions for GPIO Bank: " $GPIOX]
                 pub mod $gpiox {
                     use core::marker::PhantomData;
-                    use core::convert::Infallible;
 
-                    use crate::hal::digital::v2::OutputPin;
-                    #[cfg(feature = "unproven")]
-                    use crate::hal::digital::v2::InputPin;
-                    #[cfg(feature = "unproven")]
-                    use crate::hal::digital::v2::StatefulOutputPin;
-                    #[cfg(feature = "unproven")]
-                    use crate::hal::digital::v2::toggleable;
-                    use crate::pac::{$gpioy, $GPIOX};
-
-                    use crate::rcc::AHB;
-                    #[allow(unused_imports)]
-                    use super::{AF0, AF1, AF2, AF3, AF4, AF5, AF6, AF7, AF8, AF9, AF10, AF11, AF12, AF13, AF14, AF15};
-                    use super::{
-                        Floating, GpioExt, Input, OpenDrain, Output, Analog,
-                        PullDown, PullUp, PushPull,
-                        PXx, Gpio,
+                    use crate::{
+                        pac::{$gpioy, $GPIOX},
+                        rcc::AHB,
                     };
+
+                    #[allow(unused_imports)]
+                    use super::{
+                        AF0, AF1, AF2, AF3, AF4, AF5, AF6, AF7, AF8, AF9, AF10, AF11, AF12, AF13, AF14, AF15,
+                        IntoAf0, IntoAf1, IntoAf2, IntoAf3, IntoAf4, IntoAf5, IntoAf6, IntoAf7,
+                        IntoAf8, IntoAf9, IntoAf10, IntoAf11, IntoAf12, IntoAf13, IntoAf14, IntoAf15,
+                        Analog, Floating, Input, OpenDrain, Output, PullDown, PullUp, PushPull,
+                    };
+
+                    use super::{
+                        GpioExt, Pin, $Gpiox, Ux, Moder, Otyper, Pupdr, Afr, GpioMode,
+                    };
+
+                    #[allow(unused_imports)]
+                    use typenum::{U0, U1, U2, U3, U4, U5, U6, U7, U8, U9, U10, U11, U12, U13, U14, U15};
 
                     /// GPIO parts
                     pub struct Parts {
@@ -317,7 +578,11 @@ macro_rules! gpio {
                                 otyper: OTYPER { _0: () },
                                 pupdr: PUPDR { _0: () },
                                 $(
-                                    $pxi: $PXi { _mode: PhantomData },
+                                    $pxi: $PXi {
+                                        gpio: $Gpiox,
+                                        index: $Ui::new(),
+                                        _mode: PhantomData,
+                                    },
                                 )+
                             }
                         }
@@ -328,38 +593,27 @@ macro_rules! gpio {
                         _0: (),
                     }
 
-                    impl AFRL {
-                        // A couple device/port combos have no valid alternate functions:
-                        //   - stm32f303 GPIOG and GPIOH
-                        //   - stm32f318 GPIOC, GPIOD, and GPIOE
-                        //   - stm32f328 GPIOE
-                        #[allow(dead_code)]
-                        pub(crate) fn afr(&mut self) -> &$gpioy::AFRL {
-                            unsafe { &(*$GPIOX::ptr()).afrl }
-                        }
-                    }
+                    afr_trait!($GPIOX, AFRL, afrl, 0);
 
                     /// Opaque AFRH register
                     pub struct AFRH {
                         _0: (),
                     }
 
-                    impl AFRH {
-                        // stm32f301 and stm32f318 don't have any high pins for GPIOF
-                        #[allow(dead_code)]
-                        pub(crate) fn afr(&mut self) -> &$gpioy::AFRH {
-                            unsafe { &(*$GPIOX::ptr()).afrh }
-                        }
-                    }
+                    afr_trait!($GPIOX, AFRH, afrh, 7);
 
                     /// Opaque MODER register
                     pub struct MODER {
                         _0: (),
                     }
 
-                    impl MODER {
-                        pub(crate) fn moder(&mut self) -> &$gpioy::MODER {
-                            unsafe { &(*$GPIOX::ptr()).moder }
+                    r_trait! {
+                        ($GPIOX, $gpioy::moder::MODER15_A, 2);
+                        impl Moder for MODER {
+                            fn input { INPUT }
+                            fn output { OUTPUT }
+                            fn alternate { ALTERNATE }
+                            fn analog { ANALOG }
                         }
                     }
 
@@ -368,9 +622,11 @@ macro_rules! gpio {
                         _0: (),
                     }
 
-                    impl OTYPER {
-                        pub(crate) fn otyper(&mut self) -> &$gpioy::OTYPER {
-                            unsafe { &(*$GPIOX::ptr()).otyper }
+                    r_trait! {
+                        ($GPIOX, $gpioy::otyper::OT15_A, 1);
+                        impl Otyper for OTYPER {
+                            fn push_pull { PUSHPULL }
+                            fn open_drain { OPENDRAIN }
                         }
                     }
 
@@ -379,279 +635,33 @@ macro_rules! gpio {
                         _0: (),
                     }
 
-                    impl PUPDR {
-                        pub(crate) fn pupdr(&mut self) -> &$gpioy::PUPDR {
-                            unsafe { &(*$GPIOX::ptr()).pupdr }
+                    r_trait! {
+                        ($GPIOX, $gpioy::pupdr::PUPDR15_A, 2);
+                        impl Pupdr for PUPDR {
+                            fn floating { FLOATING }
+                            fn pull_up { PULLUP }
+                            fn pull_down { PULLDOWN }
                         }
+                    }
+
+                    impl GpioMode for $Gpiox {
+                        type MODER = MODER;
+                        type OTYPER = OTYPER;
+                        type PUPDR = PUPDR;
                     }
 
                     /// Partially erased pin
-                    pub struct $PXx<MODE> {
-                        i: u8,
-                        _mode: PhantomData<MODE>,
-                    }
-
-                    impl<MODE> $PXx<MODE> {
-                        /// Erases the port letter from the type
-                        ///
-                        /// This is useful when you want to collect the pins into an array where you
-                        /// need all the elements to have the same type
-                        pub fn downgrade(self) -> PXx<MODE> {
-                            PXx {
-                                i: self.i,
-                                gpio: Gpio::$GPIOX,
-                                _mode: self._mode,
-                            }
-                        }
-                    }
-
-                    impl<MODE> OutputPin for $PXx<Output<MODE>> {
-                        type Error = Infallible;
-
-                        fn set_high(&mut self) -> Result<(), Self::Error> {
-                            // NOTE(unsafe, write) atomic write to a stateless register
-                            unsafe { (*$GPIOX::ptr()).bsrr.write(|w| w.bits(1 << self.i)) }
-                            Ok(())
-                        }
-
-                        fn set_low(&mut self) -> Result<(), Self::Error> {
-                            // NOTE(unsafe, write) atomic write to a stateless register
-                            unsafe { (*$GPIOX::ptr()).bsrr.write(|w| w.bits(1 << (16 + self.i))) }
-                            Ok(())
-                        }
-                    }
-
-                    #[cfg(feature = "unproven")]
-                    impl<MODE> InputPin for $PXx<Input<MODE>> {
-                        type Error = Infallible;
-
-                        fn is_high(&self) -> Result<bool, Self::Error> {
-                            Ok(!self.is_low()?)
-                        }
-
-                        fn is_low(&self) -> Result<bool, Self::Error> {
-                            // NOTE(unsafe) atomic read with no side effects
-                            Ok(unsafe { (*$GPIOX::ptr()).idr.read().bits() & (1 << self.i) == 0 })
-                        }
-                    }
-
-                    #[cfg(feature = "unproven")]
-                    impl InputPin for $PXx<Output<OpenDrain>> {
-                        type Error = Infallible;
-
-                        fn is_high(&self) -> Result<bool, Self::Error> {
-                            Ok(!self.is_low()?)
-                        }
-
-                        fn is_low(&self) -> Result<bool, Self::Error> {
-                            // NOTE(unsafe) atomic read with no side effects
-                            Ok(unsafe { (*$GPIOX::ptr()).idr.read().bits() & (1 << self.i) == 0 })
-                        }
-                    }
-
-                    #[cfg(feature = "unproven")]
-                    impl<MODE> StatefulOutputPin for $PXx<Output<MODE>> {
-                        fn is_set_high(&self) -> Result<bool, Self::Error> {
-                            self.is_set_low().map(|b| !b)
-                        }
-
-                        fn is_set_low(&self) -> Result<bool, Self::Error> {
-                            // NOTE(unsafe) atomic read with no side effects
-                            Ok(unsafe { (*$GPIOX::ptr()).odr.read().bits() & (1 << self.i) == 0 })
-                        }
-                    }
-
-                    #[cfg(feature = "unproven")]
-                    impl<MODE> toggleable::Default for $PXx<Output<MODE>> {}
+                    pub type $PXx<MODE> = Pin<$Gpiox, Ux, MODE>;
 
                     $(
-                        doc_comment::doc_comment! {
-                            concat!("Pin ", stringify!($PXi)),
-                            pub struct $PXi<MODE> {
-                                _mode: PhantomData<MODE>,
+                        #[doc = "Pin " $PXi]
+                        pub type $PXi<MODE> = Pin<$Gpiox, $Ui, MODE>;
+
+                        $(
+                            impl<MODE> $IntoAfi for $PXi<MODE> {
+                                type AFR = $AFR;
                             }
-                        }
-
-                        impl<MODE> $PXi<MODE> {
-                            $(
-                                // /// Configures the pin to serve as a specific alternate function
-                                doc_comment::doc_comment!{
-                                    concat!("Configures ", stringify!($PXi), " to serve as alternate function: ", stringify!($AFi)),
-                                    pub fn $into_afi(
-                                        self,
-                                        moder: &mut MODER,
-                                        afr: &mut $AFR,
-                                    ) -> $PXi<$AFi> {
-                                        moder.moder().modify(|_, w| w.$moderi().alternate());
-                                        afr.afr().modify(|_, w| w.$afri().$afi());
-                                        $PXi { _mode: PhantomData }
-                                    }
-                                }
-                            )*
-
-                            /// Configures the pin to operate as a floating input pin
-                            pub fn into_floating_input(
-                                self,
-                                moder: &mut MODER,
-                                pupdr: &mut PUPDR,
-                            ) -> $PXi<Input<Floating>> {
-                                moder.moder().modify(|_, w| w.$moderi().input());
-                                pupdr.pupdr().modify(|_,w| w.$pupdri().floating());
-                                $PXi { _mode: PhantomData }
-                            }
-
-                            /// Configures the pin to operate as a pulled down input pin
-                            pub fn into_pull_down_input(
-                                self,
-                                moder: &mut MODER,
-                                pupdr: &mut PUPDR,
-                            ) -> $PXi<Input<PullDown>> {
-                                moder.moder().modify(|_, w| w.$moderi().input());
-                                pupdr.pupdr().modify(|_,w| w.$pupdri().pull_down());
-                                $PXi { _mode: PhantomData }
-                            }
-
-                            /// Configures the pin to operate as a pulled up input pin
-                            pub fn into_pull_up_input(
-                                self,
-                                moder: &mut MODER,
-                                pupdr: &mut PUPDR,
-                            ) -> $PXi<Input<PullUp>> {
-                                moder.moder().modify(|_, w| w.$moderi().input());
-                                pupdr.pupdr().modify(|_,w| w.$pupdri().pull_up());
-                                $PXi { _mode: PhantomData }
-                            }
-
-                            /// Configures the pin to operate as an open drain output pin
-                            pub fn into_open_drain_output(
-                                self,
-                                moder: &mut MODER,
-                                otyper: &mut OTYPER,
-                            ) -> $PXi<Output<OpenDrain>> {
-                                moder.moder().modify(|_, w| w.$moderi().output());
-                                otyper.otyper().modify(|_, w| w.$oti().open_drain());
-                                $PXi { _mode: PhantomData }
-                            }
-
-                            /// Configures the pin to operate as an push pull output pin
-                            pub fn into_push_pull_output(
-                                self,
-                                moder: &mut MODER,
-                                otyper: &mut OTYPER,
-                            ) -> $PXi<Output<PushPull>> {
-                                moder.moder().modify(|_, w| w.$moderi().output());
-                                otyper.otyper().modify(|_, w| w.$oti().push_pull());
-                                $PXi { _mode: PhantomData }
-                            }
-
-                            /// Configures the pin to operate as analog, with disabled schmitt trigger.
-                            /// This mode is suitable when the pin is connected to the DAC or ADC.
-                            pub fn into_analog(
-                                self,
-                                moder: &mut MODER,
-                                pupdr: &mut PUPDR,
-                            ) -> $PXi<Analog> {
-                                moder.moder().modify(|_, w| w.$moderi().analog());
-                                pupdr.pupdr().modify(|_,w| w.$pupdri().floating());
-                                $PXi { _mode: PhantomData }
-                            }
-                        }
-
-                        impl $PXi<Output<OpenDrain>> {
-                            /// Enables / disables the internal pull up
-                            pub fn internal_pull_up(&mut self, pupdr: &mut PUPDR, on: bool) {
-                                pupdr.pupdr().modify(|_, w| if on {
-                                    w.$pupdri().pull_up()
-                                } else {
-                                    w.$pupdri().floating()
-                                });
-                            }
-                        }
-
-                        impl<MODE> $PXi<Output<MODE>> {
-                            /// Erases the pin number from the type
-                            ///
-                            /// This is useful when you want to collect the pins into an array where you
-                            /// need all the elements to have the same type
-                            pub fn downgrade(self) -> $PXx<Output<MODE>> {
-                                $PXx {
-                                    i: $i,
-                                    _mode: self._mode,
-                                }
-                            }
-                        }
-
-                        impl<MODE> $PXi<Input<MODE>> {
-                            /// Erases the pin number from the type
-                            ///
-                            /// This is useful when you want to collect the pins into an array where you
-                            /// need all the elements to have the same type
-                            pub fn downgrade(self) -> $PXx<Input<MODE>> {
-                                $PXx {
-                                    i: $i,
-                                    _mode: self._mode,
-                                }
-                            }
-                        }
-
-                        impl<MODE> OutputPin for $PXi<Output<MODE>> {
-                            type Error = Infallible;
-
-                            fn set_high(&mut self) -> Result<(), Self::Error> {
-                                // NOTE(unsafe, write) atomic write to a stateless register
-                                unsafe { (*$GPIOX::ptr()).bsrr.write(|w| w.$bsi().set()) }
-                                Ok(())
-                            }
-
-                            fn set_low(&mut self) -> Result<(), Self::Error> {
-                                // NOTE(unsafe, write) atomic write to a stateless register
-                                unsafe { (*$GPIOX::ptr()).bsrr.write(|w| w.$bri().reset()) }
-                                Ok(())
-                            }
-                        }
-
-                        #[cfg(feature = "unproven")]
-                        impl<MODE> InputPin for $PXi<Input<MODE>> {
-                            type Error = Infallible;
-
-                            fn is_high(&self) -> Result<bool, Self::Error> {
-                                Ok(!self.is_low()?)
-                            }
-
-                            fn is_low(&self) -> Result<bool, Self::Error> {
-                                // NOTE(unsafe) atomic read with no side effects
-                                Ok(unsafe { (*$GPIOX::ptr()).idr.read().$idri().is_low()})
-                            }
-                        }
-
-                        #[cfg(feature = "unproven")]
-                        impl InputPin for $PXi<Output<OpenDrain>> {
-                            type Error = Infallible;
-
-                            fn is_high(&self) -> Result<bool, Self::Error> {
-                                Ok(!self.is_low()?)
-                            }
-
-                            fn is_low(&self) -> Result<bool, Self::Error> {
-                                // NOTE(unsafe) atomic read with no side effects
-                                Ok(unsafe { (*$GPIOX::ptr()).idr.read().$idri().is_low()})
-                            }
-                        }
-
-                        #[cfg(feature = "unproven")]
-                        impl<MODE> StatefulOutputPin for $PXi<Output<MODE>> {
-                            fn is_set_high(&self) -> Result<bool, Self::Error> {
-                                self.is_set_low().map(|b| !b)
-                            }
-
-                            fn is_set_low(&self) -> Result<bool, Self::Error> {
-                                // NOTE(unsafe) atomic read with no side effects
-                                Ok(unsafe { (*$GPIOX::ptr()).odr.read().$odri().is_low()})
-                            }
-                        }
-
-                        #[cfg(feature = "unproven")]
-                        impl<MODE> toggleable::Default for $PXi<Output<MODE>> {}
+                        )*
                     )+
                 }
             }
@@ -660,11 +670,11 @@ macro_rules! gpio {
 
     ([
         $({
-            port: ($X:ident/$x:ident, pac: $gpioy:ident),
+            port: ($X:ident/$x:ident, pac: $gpioy:ident), // $X to $x katahoudeii
             pins: [
                 $( $i:expr => {
                     reset: $mode:ty,
-                    afr: $LH:ident/$lh:ident,
+                    afr: $LH:ident/$lh:ident, // $lh iranai
                     af: [$( $af:expr ),*]
                 }, )+
             ],
@@ -675,16 +685,17 @@ macro_rules! gpio {
                 $({
                     GPIO: [<GPIO $X>],
                     gpio: [<gpio $x>],
+                    Gpio: [<Gpio $x>],
                     gpio_mapped: $gpioy,
                     gpio_mapped_ioenr: [<iop $x en>],
                     gpio_mapped_iorst: [<iop $x rst>],
                     partially_erased_pin: [<P $X x>],
                     pins: [
-                        $([<P $X $i>]: (
-                            [<p $x $i>], $i, $mode, [<moder $i>], [<AFR $LH>], [<afr $lh $i>],
-                            [<bs $i>], [<br $i>], [<odr $i>], [<idr $i>], [<pupdr $i>], [<ot $i>],
-                            { $( [<AF $af>]: ([<into_af $af>], [<af $af>]), )* },
-                        ),)+
+                        $({
+                            [<P $X $i>]: (
+                                [<p $x $i>], [<U $i>], $mode, [<AFR $LH>], [$([<IntoAf $af>]),*],
+                            ),
+                        })+
                     ],
                 },)+
             ]);
