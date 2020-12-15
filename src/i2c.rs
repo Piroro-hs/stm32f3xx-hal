@@ -175,8 +175,8 @@ impl<I2C, SCL, SDA> I2c<I2C, (SCL, SDA)> {
         crate::assert!(presc < 16);
         crate::assert!(scldel < 16);
         crate::assert!(sdadel < 16);
-        let sclh = crate::unwrap!(u8::try_from(sclh).ok());
-        let scll = crate::unwrap!(u8::try_from(scll).ok());
+        let sclh = crate::unwrap!(u8::try_from(sclh));
+        let scll = crate::unwrap!(u8::try_from(scll));
 
         // Configure for "fast mode" (400 KHz)
         // NOTE(write): writes all non-reserved bits.
@@ -450,31 +450,29 @@ pub unsafe trait Instance: Deref<Target = RegisterBlock> {
 }
 
 macro_rules! i2c {
-    ($($I2CX:ident: ($i2cXen:ident, $i2cXrst:ident, $i2cXsw:ident),)+) => {
-        $(
-            unsafe impl Instance for $I2CX {
-                fn enable_clock(apb1: &mut APB1) {
-                    apb1.enr().modify(|_, w| w.$i2cXen().enabled());
-                    apb1.rstr().modify(|_, w| w.$i2cXrst().reset());
-                    apb1.rstr().modify(|_, w| w.$i2cXrst().clear_bit());
-                }
+    ({ $I2CX:ident: ($i2cXen:ident, $i2cXrst:ident, $i2cXsw:ident) $(,)? }) => {
+        unsafe impl Instance for $I2CX {
+            fn enable_clock(apb1: &mut APB1) {
+                apb1.enr().modify(|_, w| w.$i2cXen().enabled());
+                apb1.rstr().modify(|_, w| w.$i2cXrst().reset());
+                apb1.rstr().modify(|_, w| w.$i2cXrst().clear_bit());
+            }
 
-                fn clock(clocks: Clocks) -> Hertz {
-                    // NOTE(unsafe) atomic read with no side effects
-                    match unsafe { (*RCC::ptr()).cfgr3.read().$i2cXsw().variant() } {
-                        I2C1SW_A::HSI => 8.mhz().into(),
-                        I2C1SW_A::SYSCLK => clocks.sysclk(),
-                    }
+            fn clock(clocks: Clocks) -> Hertz {
+                // NOTE(unsafe) atomic read with no side effects
+                match unsafe { (*RCC::ptr()).cfgr3.read().$i2cXsw().variant() } {
+                    I2C1SW_A::HSI => 8.mhz().into(),
+                    I2C1SW_A::SYSCLK => clocks.sysclk(),
                 }
             }
-        )+
+        }
     };
 
-    ([ $($X:literal),+ ]) => {
+    ([$($X:literal),+ $(,)?]) => {
         paste::paste! {
-            i2c!(
-                $([<I2C $X>]: ([<i2c $X en>], [<i2c $X rst>], [<i2c $X sw>]),)+
-            );
+            $(
+                i2c!({ [<I2C $X>]: ([<i2c $X en>], [<i2c $X rst>], [<i2c $X sw>]) });
+            )+
         }
     };
 }
