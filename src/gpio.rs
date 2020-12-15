@@ -26,7 +26,7 @@
 //!
 //! [InputPin]: embedded_hal::digital::v2::InputPin
 //! [OutputPin]: embedded_hal::digital::v2::OutputPin
-//! [examples/toggle.rs]: https://github.com/stm32-rs/stm32f3xx-hal/blob/v0.5.0/examples/toggle.rs
+//! [examples/toggle.rs]: https://github.com/stm32-rs/stm32f3xx-hal/blob/v0.6.0/examples/toggle.rs
 
 use core::convert::Infallible;
 use core::marker::PhantomData;
@@ -521,7 +521,7 @@ macro_rules! gpio {
             }
 
             paste::paste!{
-                #[doc = "All Pins and associated functions for GPIO Bank: " $GPIOX]
+                #[doc = "All Pins and associated functions for GPIO Bank: `" $GPIOX "`"]
                 pub mod $gpiox {
                     use core::marker::PhantomData;
 
@@ -654,7 +654,7 @@ macro_rules! gpio {
                     pub type $PXx<MODE> = Pin<$Gpiox, Ux, MODE>;
 
                     $(
-                        #[doc = "Pin " $PXi]
+                        #[doc = "Pin `" $PXi "`"]
                         pub type $PXi<MODE> = Pin<$Gpiox, $Ui, MODE>;
 
                         $(

@@ -4,7 +4,7 @@
 //!
 //! An example how to use DMA for serial, can be found at [examples/serial_dma.rs]
 //!
-//! [examples/serial_dma.rs]: https://github.com/stm32-rs/stm32f3xx-hal/blob/v0.5.0/examples/serial_dma.rs
+//! [examples/serial_dma.rs]: https://github.com/stm32-rs/stm32f3xx-hal/blob/v0.6.0/examples/serial_dma.rs
 
 // To learn about most of the ideas implemented here, check out the DMA section
 // of the Embedonomicon: https://docs.rust-embedded.org/embedonomicon/dma.html
@@ -420,8 +420,8 @@ macro_rules! dma {
             ), )+
         },
     ) => {
-        doc_comment::doc_comment! {
-            concat!("All associated types, traits and methods of the ", stringify!($DMAx), " peripheral."),
+        paste::paste! {
+            #[doc = "All associated types, traits and methods of the `" $DMAx "` peripheral."]
             pub mod $dmax {
                 use super::*;
                 use crate::pac::$DMAx;
