@@ -203,6 +203,7 @@ impl<U> Index for U
 where
     U: Unsigned,
 {
+    #[inline(always)]
     fn index(&self) -> u8 {
         Self::U8
     }
@@ -428,21 +429,25 @@ macro_rules! gpio_trait {
     ([$($gpioy:ident),+ $(,)?]) => {
         $(
             impl GpioRegExt for crate::pac::$gpioy::RegisterBlock {
+                #[inline(always)]
                 fn is_low(&self, i: u8) -> bool {
                     // NOTE(unsafe) atomic read with no side effects
                     self.idr.read().bits() & (1 << i) == 0
                 }
 
+                #[inline(always)]
                 fn is_set_low(&self, i: u8) -> bool {
                     // NOTE(unsafe) atomic read with no side effects
                     self.odr.read().bits() & (1 << i) == 0
                 }
 
+                #[inline(always)]
                 fn set_high(&self, i: u8) {
                     // NOTE(unsafe, write) atomic write to a stateless register
                     unsafe { self.bsrr.write(|w| w.bits(1 << i)); }
                 }
 
+                #[inline(always)]
                 fn set_low(&self, i: u8) {
                     // NOTE(unsafe, write) atomic write to a stateless register
                     unsafe { self.bsrr.write(|w| w.bits(1 << (16 + i))); }
@@ -461,6 +466,7 @@ gpio_trait!([gpioa, gpiob, gpioc, gpiod]);
 macro_rules! afr_trait {
     ($GPIOX:ident, $AFR:ident, $afr:ident, $offset:expr) => {
         impl Afr for $AFR {
+            #[inline]
             fn afx(&mut self, i: u8, x: u8) {
                 let i = i - $offset;
                 unsafe {
@@ -470,7 +476,7 @@ macro_rules! afr_trait {
                 }
             }
         }
-    }
+    };
 }
 
 macro_rules! r_trait {
@@ -484,6 +490,7 @@ macro_rules! r_trait {
     ) => {
         impl $Xr for $XR {
             $(
+                #[inline]
                 fn $fn(&mut self, i: u8) {
                     unsafe {
                         (*$GPIOX::ptr()).$xr.modify(|r, w| {
@@ -496,7 +503,7 @@ macro_rules! r_trait {
                 }
             )+
         }
-    }
+    };
 }
 
 macro_rules! gpio {
@@ -524,6 +531,7 @@ macro_rules! gpio {
             impl Gpio for $Gpiox {
                 type Reg = crate::pac::$gpioy::RegisterBlock;
 
+                #[inline(always)]
                 fn ptr(&self) -> *const Self::Reg {
                     crate::pac::$GPIOX::ptr()
                 }
