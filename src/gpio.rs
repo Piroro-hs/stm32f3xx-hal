@@ -36,7 +36,7 @@ use crate::{hal::digital::v2::OutputPin, rcc::AHB};
 #[cfg(feature = "unproven")]
 use crate::hal::digital::v2::{toggleable, InputPin, StatefulOutputPin};
 
-use typenum::Unsigned;
+use typenum::{Unsigned, U0, U1, U10, U11, U12, U13, U14, U15, U2, U3, U4, U5, U6, U7, U8, U9};
 
 /// Extension trait to split a GPIO peripheral in independent pins and registers
 pub trait GpioExt {
@@ -118,11 +118,16 @@ pub struct OpenDrain;
 /// Analog mode (type state)
 pub struct Analog;
 
+pub struct Alternate<AF, MODE> {
+    _af: PhantomData<AF>,
+    _mode: PhantomData<MODE>,
+}
+
 macro_rules! af {
-    ($i:literal, $AFi:ident, $IntoAfi:ident, $into_afi:ident) => {
+    ($i:literal, $Ui:ty, $AFi:ident, $IntoAfi:ident, $into_afi_push_pull:ident, $into_afi_open_drain:ident) => {
         paste::paste! {
             #[doc = "Alternate function " $i " (type state)"]
-            pub struct $AFi;
+            pub type $AFi<MODE> = Alternate<$Ui, MODE>;
         }
 
         pub trait $IntoAfi {
@@ -135,21 +140,30 @@ macro_rules! af {
             GPIO: GpioMode,
             INDEX: Index,
         {
-            paste::paste! {
-                #[doc = "Configures the pin to serve as alternate function: " $AFi]
-                pub fn $into_afi(
-                    self,
-                    moder: &mut GPIO::MODER,
-                    afr: &mut <Self as $IntoAfi>::AFR,
-                ) -> Pin<GPIO, INDEX, $AFi> {
-                    moder.alternate(self.index.index());
-                    afr.afx(self.index.index(), $i);
-                    Pin {
-                        gpio: self.gpio,
-                        index:self.index,
-                        _mode: PhantomData
-                    }
-                }
+            /// Configures the pin to operate as an alternate function push-pull output pin
+            pub fn $into_afi_push_pull(
+                self,
+                moder: &mut GPIO::MODER,
+                otyper: &mut GPIO::OTYPER,
+                afr: &mut <Self as $IntoAfi>::AFR,
+            ) -> Pin<GPIO, INDEX, $AFi<PushPull>> {
+                moder.alternate(self.index.index());
+                otyper.push_pull(self.index.index());
+                afr.afx(self.index.index(), $i);
+                self.into_mode()
+            }
+
+            /// Configures the pin to operate as an alternate function open-drain output pin
+            pub fn $into_afi_open_drain(
+                self,
+                moder: &mut GPIO::MODER,
+                otyper: &mut GPIO::OTYPER,
+                afr: &mut <Self as $IntoAfi>::AFR,
+            ) -> Pin<GPIO, INDEX, $AFi<OpenDrain>> {
+                moder.alternate(self.index.index());
+                otyper.open_drain(self.index.index());
+                afr.afx(self.index.index(), $i);
+                self.into_mode()
             }
         }
     };
@@ -157,7 +171,7 @@ macro_rules! af {
     ([$($i:literal),+ $(,)?]) => {
         paste::paste! {
             $(
-                af!($i, [<AF $i>], [<IntoAf $i>], [<into_af $i>]);
+                af!($i, [<U $i>], [<AF $i>], [<IntoAf $i>],  [<into_af $i _push_pull>], [<into_af $i _open_drain>]);
             )+
         }
     };
@@ -200,11 +214,27 @@ pub struct Pin<GPIO, INDEX, MODE> {
     _mode: PhantomData<MODE>,
 }
 
+impl<GPIO, INDEX, MODE> Pin<GPIO, INDEX, MODE> {
+    fn into_mode<NEW_MODE>(self) -> Pin<GPIO, INDEX, NEW_MODE> {
+        Pin {
+            gpio: self.gpio,
+            index: self.index,
+            _mode: PhantomData,
+        }
+    }
+}
+
 /// Marker trait indicates readable gpio mode
 pub trait Readable {}
 
 impl<MODE> Readable for Input<MODE> {}
 impl Readable for Output<OpenDrain> {}
+
+/// Marker trait indicates open-drain gpio mode
+pub trait PullUppable {}
+
+impl PullUppable for Output<OpenDrain> {}
+impl<AF> PullUppable for Alternate<AF, OpenDrain> {}
 
 impl<GPIO, INDEX, MODE> OutputPin for Pin<GPIO, INDEX, Output<MODE>>
 where
@@ -278,11 +308,7 @@ where
     ) -> Pin<GPIO, INDEX, Input<Floating>> {
         moder.input(self.index.index());
         pupdr.floating(self.index.index());
-        Pin {
-            gpio: self.gpio,
-            index: self.index,
-            _mode: PhantomData,
-        }
+        self.into_mode()
     }
 
     /// Configures the pin to operate as a pulled down input pin
@@ -293,11 +319,7 @@ where
     ) -> Pin<GPIO, INDEX, Input<PullDown>> {
         moder.input(self.index.index());
         pupdr.pull_down(self.index.index());
-        Pin {
-            gpio: self.gpio,
-            index: self.index,
-            _mode: PhantomData,
-        }
+        self.into_mode()
     }
 
     /// Configures the pin to operate as a pulled up input pin
@@ -308,14 +330,10 @@ where
     ) -> Pin<GPIO, INDEX, Input<PullUp>> {
         moder.input(self.index.index());
         pupdr.pull_up(self.index.index());
-        Pin {
-            gpio: self.gpio,
-            index: self.index,
-            _mode: PhantomData,
-        }
+        self.into_mode()
     }
 
-    /// Configures the pin to operate as an open drain output pin
+    /// Configures the pin to operate as an open-drain output pin
     pub fn into_open_drain_output(
         self,
         moder: &mut GPIO::MODER,
@@ -323,14 +341,10 @@ where
     ) -> Pin<GPIO, INDEX, Output<OpenDrain>> {
         moder.output(self.index.index());
         otyper.open_drain(self.index.index());
-        Pin {
-            gpio: self.gpio,
-            index: self.index,
-            _mode: PhantomData,
-        }
+        self.into_mode()
     }
 
-    /// Configures the pin to operate as an push pull output pin
+    /// Configures the pin to operate as a push-pull output pin
     pub fn into_push_pull_output(
         self,
         moder: &mut GPIO::MODER,
@@ -338,18 +352,15 @@ where
     ) -> Pin<GPIO, INDEX, Output<PushPull>> {
         moder.output(self.index.index());
         otyper.push_pull(self.index.index());
-        Pin {
-            gpio: self.gpio,
-            index: self.index,
-            _mode: PhantomData,
-        }
+        self.into_mode()
     }
 }
 
-impl<GPIO, INDEX> Pin<GPIO, INDEX, Output<OpenDrain>>
+impl<GPIO, INDEX, MODE> Pin<GPIO, INDEX, MODE>
 where
     GPIO: GpioMode,
     INDEX: Index,
+    MODE: PullUppable,
 {
     /// Enables / disables the internal pull up
     pub fn internal_pull_up(&mut self, pupdr: &mut GPIO::PUPDR, on: bool) {
@@ -364,8 +375,8 @@ where
 impl<GPIO, INDEX, MODE> Pin<GPIO, INDEX, MODE>
 where
     // GPIO: Gpio + GpioMode,
-    GPIO: Gpio,
-    GPIO::Reg: 'static + Sized,
+    // GPIO: Gpio,
+    // GPIO::Reg: 'static + Sized,
     INDEX: Unsigned,
 {
     /// Erases the pin number from the type
@@ -508,15 +519,13 @@ macro_rules! gpio {
         },)+
     ]) => {
         $(
-            use crate::pac::$GPIOX;
-
             pub struct $Gpiox;
 
             impl Gpio for $Gpiox {
                 type Reg = crate::pac::$gpioy::RegisterBlock;
 
                 fn ptr(&self) -> *const Self::Reg {
-                    $GPIOX::ptr()
+                    crate::pac::$GPIOX::ptr()
                 }
             }
 
@@ -572,11 +581,11 @@ macro_rules! gpio {
                             ahb.rstr().modify(|_, w| w.$iopxrst().clear_bit());
 
                             Parts {
-                                afrh: AFRH { _0: () },
-                                afrl: AFRL { _0: () },
-                                moder: MODER { _0: () },
-                                otyper: OTYPER { _0: () },
-                                pupdr: PUPDR { _0: () },
+                                afrh: AFRH(()),
+                                afrl: AFRL(()),
+                                moder: MODER(()),
+                                otyper: OTYPER(()),
+                                pupdr: PUPDR(()),
                                 $(
                                     $pxi: $PXi {
                                         gpio: $Gpiox,
@@ -589,23 +598,17 @@ macro_rules! gpio {
                     }
 
                     /// Opaque AFRL register
-                    pub struct AFRL {
-                        _0: (),
-                    }
+                    pub struct AFRL(());
 
                     afr_trait!($GPIOX, AFRL, afrl, 0);
 
                     /// Opaque AFRH register
-                    pub struct AFRH {
-                        _0: (),
-                    }
+                    pub struct AFRH(());
 
                     afr_trait!($GPIOX, AFRH, afrh, 7);
 
                     /// Opaque MODER register
-                    pub struct MODER {
-                        _0: (),
-                    }
+                    pub struct MODER(());
 
                     r_trait! {
                         ($GPIOX, $gpioy::moder::MODER15_A, 2);
@@ -618,9 +621,7 @@ macro_rules! gpio {
                     }
 
                     /// Opaque OTYPER register
-                    pub struct OTYPER {
-                        _0: (),
-                    }
+                    pub struct OTYPER(());
 
                     r_trait! {
                         ($GPIOX, $gpioy::otyper::OT15_A, 1);
@@ -631,9 +632,7 @@ macro_rules! gpio {
                     }
 
                     /// Opaque PUPDR register
-                    pub struct PUPDR {
-                        _0: (),
-                    }
+                    pub struct PUPDR(());
 
                     r_trait! {
                         ($GPIOX, $gpioy::pupdr::PUPDR15_A, 2);
@@ -723,9 +722,9 @@ gpio!([
             10 => { reset: Input<Floating>, afr: H/h, af: [1, 3, 4, 5, 6, 7, 8, 10, 15] },
             11 => { reset: Input<Floating>, afr: H/h, af: [5, 6, 7, 9, 11, 12, 15] },
             12 => { reset: Input<Floating>, afr: H/h, af: [1, 5, 6, 7, 8, 9, 11, 15] },
-            13 => { reset: AF0, afr: H/h, af: [0, 1, 3, 5, 7, 15] },
-            14 => { reset: AF0, afr: H/h, af: [0, 3, 4, 6, 7, 15] },
-            15 => { reset: AF0, afr: H/h, af: [0, 1, 3, 4, 6, 7, 9, 15] },
+            13 => { reset: AF0<PushPull>, afr: H/h, af: [0, 1, 3, 5, 7, 15] },
+            14 => { reset: AF0<PushPull>, afr: H/h, af: [0, 3, 4, 6, 7, 15] },
+            15 => { reset: AF0<PushPull>, afr: H/h, af: [0, 1, 3, 4, 6, 7, 9, 15] },
         ],
     },
     {
@@ -734,8 +733,8 @@ gpio!([
             0 => { reset: Input<Floating>, afr: L/l, af: [3, 6, 15] },
             1 => { reset: Input<Floating>, afr: L/l, af: [3, 6, 8, 15] },
             2 => { reset: Input<Floating>, afr: L/l, af: [3, 15] },
-            3 => { reset: AF0, afr: L/l, af: [0, 1, 3, 6, 7, 15] },
-            4 => { reset: AF0, afr: L/l, af: [0, 1, 3, 6, 7, 10, 15] },
+            3 => { reset: AF0<PushPull>, afr: L/l, af: [0, 1, 3, 6, 7, 15] },
+            4 => { reset: AF0<PushPull>, afr: L/l, af: [0, 1, 3, 6, 7, 10, 15] },
             5 => { reset: Input<Floating>, afr: L/l, af: [1, 4, 6, 7, 8, 10, 15] },
             6 => { reset: Input<Floating>, afr: L/l, af: [1, 3, 4, 7, 15] },
             7 => { reset: Input<Floating>, afr: L/l, af: [1, 3, 4, 7, 15] },
@@ -803,9 +802,9 @@ gpio!([
             10 => { reset: Input<Floating>, afr: H/h, af: [1, 3, 4, 5, 6, 7, 8, 10, 11, 15] },
             11 => { reset: Input<Floating>, afr: H/h, af: [5, 6, 7, 8, 9, 10, 11, 12, 15] },
             12 => { reset: Input<Floating>, afr: H/h, af: [1, 5, 6, 7, 8, 9, 10, 11, 15] },
-            13 => { reset: AF0, afr: H/h, af: [0, 1, 3, 5, 7, 10, 15] },
-            14 => { reset: AF0, afr: H/h, af: [0, 3, 4, 5, 6, 7, 15] },
-            15 => { reset: AF0, afr: H/h, af: [0, 1, 2, 3, 4, 5, 6, 7, 9, 15] },
+            13 => { reset: AF0<PushPull>, afr: H/h, af: [0, 1, 3, 5, 7, 10, 15] },
+            14 => { reset: AF0<PushPull>, afr: H/h, af: [0, 3, 4, 5, 6, 7, 15] },
+            15 => { reset: AF0<PushPull>, afr: H/h, af: [0, 1, 2, 3, 4, 5, 6, 7, 9, 15] },
         ],
     },
     {
@@ -814,8 +813,8 @@ gpio!([
             0 => { reset: Input<Floating>, afr: L/l, af: [2, 3, 4, 6, 15] },
             1 => { reset: Input<Floating>, afr: L/l, af: [2, 3, 4, 6, 8, 15] },
             2 => { reset: Input<Floating>, afr: L/l, af: [3, 15] },
-            3 => { reset: AF0, afr: L/l, af: [0, 1, 2, 3, 4, 5, 6, 7, 10, 15] },
-            4 => { reset: AF0, afr: L/l, af: [0, 1, 2, 3, 4, 5, 6, 7, 10, 15] },
+            3 => { reset: AF0<PushPull>, afr: L/l, af: [0, 1, 2, 3, 4, 5, 6, 7, 10, 15] },
+            4 => { reset: AF0<PushPull>, afr: L/l, af: [0, 1, 2, 3, 4, 5, 6, 7, 10, 15] },
             5 => { reset: Input<Floating>, afr: L/l, af: [1, 2, 3, 4, 5, 6, 7, 8, 10, 15] },
             6 => { reset: Input<Floating>, afr: L/l, af: [1, 2, 3, 4, 5, 6, 7, 10, 15] },
             7 => { reset: Input<Floating>, afr: L/l, af: [1, 2, 3, 4, 5, 7, 10, 12, 15] },
@@ -962,9 +961,9 @@ gpio!([
             10 => { reset: Input<Floating>, afr: H/h, af: [1, 3, 4, 6, 7, 8, 10, 11, 15] },
             11 => { reset: Input<Floating>, afr: H/h, af: [6, 7, 8, 9, 10, 11, 12, 14, 15] },
             12 => { reset: Input<Floating>, afr: H/h, af: [1, 6, 7, 8, 9, 10, 11, 14, 15] },
-            13 => { reset: AF0, afr: H/h, af: [0, 1, 3, 5, 7, 10, 15] },
-            14 => { reset: AF0, afr: H/h, af: [0, 3, 4, 5, 6, 7, 15] },
-            15 => { reset: AF0, afr: H/h, af: [0, 1, 2, 4, 5, 6, 7, 9, 15] },
+            13 => { reset: AF0<PushPull>, afr: H/h, af: [0, 1, 3, 5, 7, 10, 15] },
+            14 => { reset: AF0<PushPull>, afr: H/h, af: [0, 3, 4, 5, 6, 7, 15] },
+            15 => { reset: AF0<PushPull>, afr: H/h, af: [0, 1, 2, 4, 5, 6, 7, 9, 15] },
         ],
     },
     {
@@ -973,8 +972,8 @@ gpio!([
             0 => { reset: Input<Floating>, afr: L/l, af: [2, 3, 4, 6, 15] },
             1 => { reset: Input<Floating>, afr: L/l, af: [2, 3, 4, 6, 8, 15] },
             2 => { reset: Input<Floating>, afr: L/l, af: [3, 15] },
-            3 => { reset: AF0, afr: L/l, af: [0, 1, 2, 3, 4, 5, 6, 7, 10, 15] },
-            4 => { reset: AF0, afr: L/l, af: [0, 1, 2, 3, 4, 5, 6, 7, 10, 15] },
+            3 => { reset: AF0<PushPull>, afr: L/l, af: [0, 1, 2, 3, 4, 5, 6, 7, 10, 15] },
+            4 => { reset: AF0<PushPull>, afr: L/l, af: [0, 1, 2, 3, 4, 5, 6, 7, 10, 15] },
             5 => { reset: Input<Floating>, afr: L/l, af: [1, 2, 3, 4, 5, 6, 7, 10, 15] },
             6 => { reset: Input<Floating>, afr: L/l, af: [1, 2, 3, 4, 5, 6, 7, 10, 15] },
             7 => { reset: Input<Floating>, afr: L/l, af: [1, 2, 3, 4, 5, 7, 10, 15] },
@@ -1083,9 +1082,9 @@ gpio!([
             10 => { reset: Input<Floating>, afr: H/h, af: [1, 3, 6, 7, 8, 10, 13, 15] },
             11 => { reset: Input<Floating>, afr: H/h, af: [6, 7, 9, 11, 12, 13, 15] },
             12 => { reset: Input<Floating>, afr: H/h, af: [1, 6, 7, 8, 9, 11, 13, 15] },
-            13 => { reset: AF0, afr: H/h, af: [0, 1, 3, 5, 7, 15] },
-            14 => { reset: AF0, afr: H/h, af: [0, 3, 4, 6, 7, 15] },
-            15 => { reset: AF0, afr: H/h, af: [0, 1, 3, 4, 5, 7, 9, 13, 15] },
+            13 => { reset: AF0<PushPull>, afr: H/h, af: [0, 1, 3, 5, 7, 15] },
+            14 => { reset: AF0<PushPull>, afr: H/h, af: [0, 3, 4, 6, 7, 15] },
+            15 => { reset: AF0<PushPull>, afr: H/h, af: [0, 1, 3, 4, 5, 7, 9, 13, 15] },
         ],
     },
     {
@@ -1094,8 +1093,8 @@ gpio!([
             0 => { reset: Input<Floating>, afr: L/l, af: [2, 3, 6, 15] },
             1 => { reset: Input<Floating>, afr: L/l, af: [2, 3, 6, 8, 13, 15] },
             2 => { reset: Input<Floating>, afr: L/l, af: [3, 13, 15] },
-            3 => { reset: AF0, afr: L/l, af: [0, 1, 3, 5, 7, 10, 12, 13, 15] },
-            4 => { reset: AF0, afr: L/l, af: [0, 1, 2, 3, 5, 7, 10, 13, 15] },
+            3 => { reset: AF0<PushPull>, afr: L/l, af: [0, 1, 3, 5, 7, 10, 12, 13, 15] },
+            4 => { reset: AF0<PushPull>, afr: L/l, af: [0, 1, 2, 3, 5, 7, 10, 13, 15] },
             5 => { reset: Input<Floating>, afr: L/l, af: [1, 2, 4, 5, 7, 10, 13, 15] },
             6 => { reset: Input<Floating>, afr: L/l, af: [1, 3, 4, 7, 12, 13, 15] },
             7 => { reset: Input<Floating>, afr: L/l, af: [1, 3, 4, 7, 10, 13, 15] },
@@ -1163,9 +1162,9 @@ gpio!([
             10 => { reset: Input<Floating>, afr: H/h, af: [1, 3, 4, 5, 7, 9, 10, 15] },
             11 => { reset: Input<Floating>, afr: H/h, af: [2, 5, 6, 7, 8, 9, 10, 14, 15] },
             12 => { reset: Input<Floating>, afr: H/h, af: [1, 2, 6, 7, 8, 9, 10, 14, 15] },
-            13 => { reset: AF0, afr: H/h, af: [0, 1, 2, 3, 5, 6, 7, 10, 15] },
-            14 => { reset: AF0, afr: H/h, af: [0, 3, 4, 10, 15] },
-            15 => { reset: AF0, afr: H/h, af: [0, 1, 3, 4, 5, 6, 10, 15] },
+            13 => { reset: AF0<PushPull>, afr: H/h, af: [0, 1, 2, 3, 5, 6, 7, 10, 15] },
+            14 => { reset: AF0<PushPull>, afr: H/h, af: [0, 3, 4, 10, 15] },
+            15 => { reset: AF0<PushPull>, afr: H/h, af: [0, 1, 3, 4, 5, 6, 10, 15] },
         ],
     },
     {
@@ -1174,8 +1173,8 @@ gpio!([
             0 => { reset: Input<Floating>, afr: L/l, af: [2, 3, 5, 10, 15] },
             1 => { reset: Input<Floating>, afr: L/l, af: [2, 3, 15] },
             2 => { reset: Input<Floating>, afr: L/l, af: [15] },
-            3 => { reset: AF0, afr: L/l, af: [0, 1, 2, 3, 5, 6, 7, 9, 10, 15] },
-            4 => { reset: AF0, afr: L/l, af: [0, 1, 2, 3, 5, 6, 7, 9, 10, 15] },
+            3 => { reset: AF0<PushPull>, afr: L/l, af: [0, 1, 2, 3, 5, 6, 7, 9, 10, 15] },
+            4 => { reset: AF0<PushPull>, afr: L/l, af: [0, 1, 2, 3, 5, 6, 7, 9, 10, 15] },
             5 => { reset: Input<Floating>, afr: L/l, af: [1, 2, 4, 5, 6, 7, 10, 11, 15] },
             6 => { reset: Input<Floating>, afr: L/l, af: [1, 2, 3, 4, 7, 9, 10, 11, 15] },
             7 => { reset: Input<Floating>, afr: L/l, af: [1, 2, 3, 4, 7, 9, 10, 11, 15] },
