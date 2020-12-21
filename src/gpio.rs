@@ -613,7 +613,7 @@ macro_rules! gpio {
                     /// Opaque AFRH register
                     pub struct AFRH(());
 
-                    afr_trait!($GPIOX, AFRH, afrh, 7);
+                    afr_trait!($GPIOX, AFRH, afrh, 8);
 
                     /// Opaque MODER register
                     pub struct MODER(());
