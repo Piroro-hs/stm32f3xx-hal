@@ -47,46 +47,22 @@ pub trait GpioExt {
     fn split(self, ahb: &mut AHB) -> Self::Parts;
 }
 
-pub trait GpioRegExt {
-    fn is_low(&self, i: u8) -> bool;
-    fn is_set_low(&self, i: u8) -> bool;
-    fn set_high(&self, i: u8);
-    fn set_low(&self, i: u8);
+pub struct Pin<GPIO, INDEX, MODE> {
+    gpio: GPIO,
+    index: INDEX,
+    _mode: PhantomData<MODE>,
 }
 
-pub trait Moder {
-    fn input(&mut self, i: u8);
-    fn output(&mut self, i: u8);
-    fn alternate(&mut self, i: u8);
-    fn analog(&mut self, i: u8);
-}
+/// Marker trait
+pub trait Gpio: private::Gpio {}
 
-pub trait Otyper {
-    fn push_pull(&mut self, i: u8);
-    fn open_drain(&mut self, i: u8);
-}
+/// Marker trait
+pub trait GpioStatic: private::GpioStatic {}
 
-pub trait Pupdr {
-    fn floating(&mut self, i: u8);
-    fn pull_up(&mut self, i: u8);
-    fn pull_down(&mut self, i: u8);
-}
-
-pub trait Afr {
-    fn afx(&mut self, i: u8, x: u8);
-}
-
-pub trait Gpio {
-    type Reg: GpioRegExt + ?Sized;
-
-    fn ptr(&self) -> *const Self::Reg;
-}
-
-pub trait GpioMode {
-    type MODER: Moder;
-    type OTYPER: Otyper;
-    type PUPDR: Pupdr;
-}
+// impl<T> GpioStatic for T
+// where
+//     T: private::GpioStatic,
+// {}
 
 /// Marker trait for pin index
 pub trait Index {
@@ -94,9 +70,7 @@ pub trait Index {
 }
 
 /// Input mode (type state)
-pub struct Input<MODE> {
-    _mode: PhantomData<MODE>,
-}
+pub struct Input<MODE>(PhantomData<MODE>);
 
 /// Floating input (type state)
 pub struct Floating;
@@ -106,9 +80,7 @@ pub struct PullDown;
 pub struct PullUp;
 
 /// Output mode (type state)
-pub struct Output<MODE> {
-    _mode: PhantomData<MODE>,
-}
+pub struct Output<MODE>(PhantomData<MODE>);
 
 /// Push pull output (type state)
 pub struct PushPull;
@@ -118,9 +90,78 @@ pub struct OpenDrain;
 /// Analog mode (type state)
 pub struct Analog;
 
-pub struct Alternate<AF, MODE> {
-    _af: PhantomData<AF>,
-    _mode: PhantomData<MODE>,
+/// Alternate function mode (type state)
+pub struct Alternate<AF, MODE>(PhantomData<AF>, PhantomData<MODE>);
+
+impl<GPIO, INDEX, MODE> Pin<GPIO, INDEX, MODE> {
+    fn into_mode<NEW_MODE>(self) -> Pin<GPIO, INDEX, NEW_MODE> {
+        Pin {
+            gpio: self.gpio,
+            index: self.index,
+            _mode: PhantomData,
+        }
+    }
+}
+
+impl<GPIO, INDEX, MODE> Pin<GPIO, INDEX, MODE>
+where
+    GPIO: GpioStatic,
+    INDEX: Index,
+{
+    /// Configures the pin to operate as a floating input pin
+    pub fn into_floating_input(
+        self,
+        moder: &mut GPIO::MODER,
+        pupdr: &mut GPIO::PUPDR,
+    ) -> Pin<GPIO, INDEX, Input<Floating>> {
+        moder.input(self.index.index());
+        pupdr.floating(self.index.index());
+        self.into_mode()
+    }
+
+    /// Configures the pin to operate as a pulled down input pin
+    pub fn into_pull_down_input(
+        self,
+        moder: &mut GPIO::MODER,
+        pupdr: &mut GPIO::PUPDR,
+    ) -> Pin<GPIO, INDEX, Input<PullDown>> {
+        moder.input(self.index.index());
+        pupdr.pull_down(self.index.index());
+        self.into_mode()
+    }
+
+    /// Configures the pin to operate as a pulled up input pin
+    pub fn into_pull_up_input(
+        self,
+        moder: &mut GPIO::MODER,
+        pupdr: &mut GPIO::PUPDR,
+    ) -> Pin<GPIO, INDEX, Input<PullUp>> {
+        moder.input(self.index.index());
+        pupdr.pull_up(self.index.index());
+        self.into_mode()
+    }
+
+    /// Configures the pin to operate as an open-drain output pin
+    pub fn into_open_drain_output(
+        self,
+        moder: &mut GPIO::MODER,
+        otyper: &mut GPIO::OTYPER,
+    ) -> Pin<GPIO, INDEX, Output<OpenDrain>> {
+        moder.output(self.index.index());
+        otyper.open_drain(self.index.index());
+        self.into_mode()
+    }
+
+    /// Configures the pin to operate as a push-pull output pin
+    pub fn into_push_pull_output(
+        self,
+        moder: &mut GPIO::MODER,
+        otyper: &mut GPIO::OTYPER,
+    ) -> Pin<GPIO, INDEX, Output<PushPull>> {
+        moder.output(self.index.index());
+        otyper.push_pull(self.index.index());
+        self.into_mode()
+    }
 }
 
 macro_rules! af {
@@ -137,7 +178,7 @@ macro_rules! af {
         impl<GPIO, INDEX, MODE> Pin<GPIO, INDEX, MODE>
         where
             Self: $IntoAfi,
-            GPIO: GpioMode,
+            GPIO: GpioStatic,
             INDEX: Index,
         {
             /// Configures the pin to operate as an alternate function push-pull output pin
@@ -183,13 +224,15 @@ pub struct Gpiox {
     ptr: *const dyn GpioRegExt,
 }
 
-impl Gpio for Gpiox {
+impl private::Gpio for Gpiox {
     type Reg = dyn GpioRegExt;
 
     fn ptr(&self) -> *const Self::Reg {
         self.ptr
     }
 }
+
+impl Gpio for Gpiox {}
 
 pub struct Ux(u8);
 
@@ -206,22 +249,6 @@ where
     #[inline(always)]
     fn index(&self) -> u8 {
         Self::U8
-    }
-}
-
-pub struct Pin<GPIO, INDEX, MODE> {
-    gpio: GPIO,
-    index: INDEX,
-    _mode: PhantomData<MODE>,
-}
-
-impl<GPIO, INDEX, MODE> Pin<GPIO, INDEX, MODE> {
-    fn into_mode<NEW_MODE>(self) -> Pin<GPIO, INDEX, NEW_MODE> {
-        Pin {
-            gpio: self.gpio,
-            index: self.index,
-            _mode: PhantomData,
-        }
     }
 }
 
@@ -298,68 +325,7 @@ where
 
 impl<GPIO, INDEX, MODE> Pin<GPIO, INDEX, MODE>
 where
-    GPIO: GpioMode,
-    INDEX: Index,
-{
-    /// Configures the pin to operate as a floating input pin
-    pub fn into_floating_input(
-        self,
-        moder: &mut GPIO::MODER,
-        pupdr: &mut GPIO::PUPDR,
-    ) -> Pin<GPIO, INDEX, Input<Floating>> {
-        moder.input(self.index.index());
-        pupdr.floating(self.index.index());
-        self.into_mode()
-    }
-
-    /// Configures the pin to operate as a pulled down input pin
-    pub fn into_pull_down_input(
-        self,
-        moder: &mut GPIO::MODER,
-        pupdr: &mut GPIO::PUPDR,
-    ) -> Pin<GPIO, INDEX, Input<PullDown>> {
-        moder.input(self.index.index());
-        pupdr.pull_down(self.index.index());
-        self.into_mode()
-    }
-
-    /// Configures the pin to operate as a pulled up input pin
-    pub fn into_pull_up_input(
-        self,
-        moder: &mut GPIO::MODER,
-        pupdr: &mut GPIO::PUPDR,
-    ) -> Pin<GPIO, INDEX, Input<PullUp>> {
-        moder.input(self.index.index());
-        pupdr.pull_up(self.index.index());
-        self.into_mode()
-    }
-
-    /// Configures the pin to operate as an open-drain output pin
-    pub fn into_open_drain_output(
-        self,
-        moder: &mut GPIO::MODER,
-        otyper: &mut GPIO::OTYPER,
-    ) -> Pin<GPIO, INDEX, Output<OpenDrain>> {
-        moder.output(self.index.index());
-        otyper.open_drain(self.index.index());
-        self.into_mode()
-    }
-
-    /// Configures the pin to operate as a push-pull output pin
-    pub fn into_push_pull_output(
-        self,
-        moder: &mut GPIO::MODER,
-        otyper: &mut GPIO::OTYPER,
-    ) -> Pin<GPIO, INDEX, Output<PushPull>> {
-        moder.output(self.index.index());
-        otyper.push_pull(self.index.index());
-        self.into_mode()
-    }
-}
-
-impl<GPIO, INDEX, MODE> Pin<GPIO, INDEX, MODE>
-where
-    GPIO: GpioMode,
+    GPIO: GpioStatic,
     INDEX: Index,
     MODE: PullUppable,
 {
@@ -395,8 +361,7 @@ where
 
 impl<GPIO, MODE> Pin<GPIO, Ux, MODE>
 where
-    // GPIO: Gpio + GpioMode,
-    GPIO: Gpio,
+    GPIO: GpioStatic,
     GPIO::Reg: 'static + Sized,
 {
     /// Erases the port letter from the type
@@ -413,6 +378,51 @@ where
         }
     }
 }
+
+mod private {
+    pub trait GpioRegExt {
+        fn is_low(&self, i: u8) -> bool;
+        fn is_set_low(&self, i: u8) -> bool;
+        fn set_high(&self, i: u8);
+        fn set_low(&self, i: u8);
+    }
+    
+    pub trait Moder {
+        fn input(&mut self, i: u8);
+        fn output(&mut self, i: u8);
+        fn alternate(&mut self, i: u8);
+        fn analog(&mut self, i: u8);
+    }
+    
+    pub trait Otyper {
+        fn push_pull(&mut self, i: u8);
+        fn open_drain(&mut self, i: u8);
+    }
+    
+    pub trait Pupdr {
+        fn floating(&mut self, i: u8);
+        fn pull_up(&mut self, i: u8);
+        fn pull_down(&mut self, i: u8);
+    }
+    
+    pub trait Afr {
+        fn afx(&mut self, i: u8, x: u8);
+    }
+    
+    pub trait Gpio {
+        type Reg: GpioRegExt + ?Sized;
+    
+        fn ptr(&self) -> *const Self::Reg;
+    }
+
+    pub trait GpioStatic: Gpio {
+        type MODER: Moder;
+        type OTYPER: Otyper;
+        type PUPDR: Pupdr;
+    }
+}
+
+use private::{GpioRegExt, Moder, Otyper, Pupdr, Afr};
 
 /// Fully erased pin
 ///
@@ -463,7 +473,7 @@ gpio_trait!([gpioa, gpiob, gpioc]);
 #[cfg(feature = "gpio-f373")]
 gpio_trait!([gpioa, gpiob, gpioc, gpiod]);
 
-macro_rules! afr_trait {
+macro_rules! afr_trait { // TODO: unsafe nara mattaku mijikaku natteinai
     ($GPIOX:ident, $AFR:ident, $afr:ident, $offset:expr) => {
         impl Afr for $AFR {
             #[inline]
@@ -528,7 +538,7 @@ macro_rules! gpio {
         $(
             pub struct $Gpiox;
 
-            impl Gpio for $Gpiox {
+            impl private::Gpio for $Gpiox {
                 type Reg = crate::pac::$gpioy::RegisterBlock;
 
                 #[inline(always)]
@@ -536,6 +546,16 @@ macro_rules! gpio {
                     crate::pac::$GPIOX::ptr()
                 }
             }
+
+            impl Gpio for $Gpiox {}
+
+            impl private::GpioStatic for $Gpiox {
+                type MODER = $gpiox::MODER;
+                type OTYPER = $gpiox::OTYPER;
+                type PUPDR = $gpiox::PUPDR;
+            }
+
+            impl GpioStatic for $Gpiox {}
 
             paste::paste!{
                 #[doc = "All Pins and associated functions for GPIO Bank: `" $GPIOX "`"]
@@ -556,7 +576,7 @@ macro_rules! gpio {
                     };
 
                     use super::{
-                        GpioExt, Pin, $Gpiox, Ux, Moder, Otyper, Pupdr, Afr, GpioMode,
+                        GpioExt, Pin, $Gpiox, Ux, Moder, Otyper, Pupdr, Afr,
                     };
 
                     #[allow(unused_imports)]
@@ -649,12 +669,6 @@ macro_rules! gpio {
                             fn pull_up { PULLUP }
                             fn pull_down { PULLDOWN }
                         }
-                    }
-
-                    impl GpioMode for $Gpiox {
-                        type MODER = MODER;
-                        type OTYPER = OTYPER;
-                        type PUPDR = PUPDR;
                     }
 
                     /// Partially erased pin
