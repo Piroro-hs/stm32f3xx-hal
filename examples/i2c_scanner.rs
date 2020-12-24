@@ -1,6 +1,5 @@
 //! Example of using I2C.
 //! Scans available I2C devices on bus and print the result.
-//! Appropriate pull-up registers should be installed on I2C bus.
 //! Target board: STM32F3DISCOVERY
 
 #![no_std]
@@ -29,10 +28,16 @@ fn main() -> ! {
     let mut gpiob = dp.GPIOB.split(&mut rcc.ahb);
 
     // Configure I2C1
-    let pins = (
-        gpiob.pb6.into_af4(&mut gpiob.moder, &mut gpiob.afrl), // SCL
-        gpiob.pb7.into_af4(&mut gpiob.moder, &mut gpiob.afrl), // SDA
+    let mut pins = (
+        gpiob
+            .pb6
+            .into_af4_open_drain(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl), // SCL
+        gpiob
+            .pb7
+            .into_af4_open_drain(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl), // SDA
     );
+    pins.0.internal_pull_up(&mut gpiob.pupdr, true);
+    pins.1.internal_pull_up(&mut gpiob.pupdr, true);
     let mut i2c = hal::i2c::I2c::new(dp.I2C1, pins, 100.khz(), clocks, &mut rcc.apb1);
 
     hprintln!("Start i2c scanning...").expect("Error using hprintln.");
