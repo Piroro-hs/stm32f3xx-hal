@@ -13,7 +13,8 @@
 
 pub use embedded_hal_can::{self, Filter, Frame, Id, Receiver, Transmitter};
 
-use crate::gpio::{gpioa, AF9, PushPull};
+use crate::gpio::gpioa;
+use crate::gpio::{PushPull, AF9};
 use crate::rcc::APB1;
 use crate::stm32;
 use nb::{self, Error};
@@ -338,7 +339,13 @@ impl Can {
     }
 
     /// Release owned peripherals
-    pub fn free(self) -> (stm32::CAN, gpioa::PA11<AF9<PushPull>>, gpioa::PA12<AF9<PushPull>>) {
+    pub fn free(
+        self,
+    ) -> (
+        stm32::CAN,
+        gpioa::PA11<AF9<PushPull>>,
+        gpioa::PA12<AF9<PushPull>>,
+    ) {
         (self.can, self._rx, self._tx)
     }
 }

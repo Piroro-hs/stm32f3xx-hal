@@ -101,7 +101,7 @@ use crate::gpio::gpiof::PF6;
     feature = "stm32f398",
 ))]
 use crate::gpio::gpiof::{PF10, PF9};
-use crate::gpio::{AF5, AF6, PushPull};
+use crate::gpio::{PushPull, AF5, AF6};
 use crate::rcc::Clocks;
 #[cfg(any(
     feature = "stm32f301",

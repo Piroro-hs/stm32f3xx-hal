@@ -4,11 +4,10 @@
 //!
 //! [examples/i2c_scanner.rs]: https://github.com/stm32-rs/stm32f3xx-hal/blob/v0.6.0/examples/i2c_scanner.rs
 
-use core::convert::TryFrom;
-use core::ops::Deref;
+use core::{convert::TryFrom, ops::Deref};
 
 use crate::{
-    gpio::{gpioa, gpiob, AF4, OpenDrain},
+    gpio::{gpioa, gpiob, OpenDrain, AF4},
     hal::blocking::i2c::{Read, Write, WriteRead},
     pac::{i2c1::RegisterBlock, rcc::cfgr3::I2C1SW_A, I2C1, RCC},
     rcc::{Clocks, APB1},

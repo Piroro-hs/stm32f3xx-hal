@@ -10,7 +10,7 @@ use crate::pac::{RCC, USB};
 use stm32_usbd::UsbPeripheral;
 
 use crate::gpio::gpioa::{PA11, PA12};
-use crate::gpio::{AF14, PushPull};
+use crate::gpio::{PushPull, AF14};
 pub use stm32_usbd::UsbBus;
 
 /// USB Peripheral
