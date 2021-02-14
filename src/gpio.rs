@@ -437,7 +437,7 @@ where
     }
 }
 
-impl<GPIO, INDEX, MODE> OutputPin for Pin<GPIO, INDEX, Output<MODE>>
+impl<GPIO, INDEX, OTYPE> OutputPin for Pin<GPIO, INDEX, Output<OTYPE>>
 where
     GPIO: Gpio,
     INDEX: Index,
@@ -477,7 +477,7 @@ where
 }
 
 #[cfg(feature = "unproven")]
-impl<GPIO, INDEX, MODE> StatefulOutputPin for Pin<GPIO, INDEX, Output<MODE>>
+impl<GPIO, INDEX, OTYPE> StatefulOutputPin for Pin<GPIO, INDEX, Output<OTYPE>>
 where
     GPIO: Gpio,
     INDEX: Index,
@@ -493,7 +493,7 @@ where
 }
 
 #[cfg(feature = "unproven")]
-impl<GPIO, INDEX, MODE> toggleable::Default for Pin<GPIO, INDEX, Output<MODE>>
+impl<GPIO, INDEX, OTYPE> toggleable::Default for Pin<GPIO, INDEX, Output<OTYPE>>
 where
     GPIO: Gpio,
     INDEX: Index,
@@ -531,19 +531,14 @@ where
                 let ftsr = &exti.ftsr1;
             }
         }
-        match edge {
-            Edge::Rising => unsafe {
-                modify_at!(rtsr, 1, self.index.index(), 1);
-                modify_at!(ftsr, 1, self.index.index(), 0);
-            },
-            Edge::Falling => unsafe {
-                modify_at!(rtsr, 1, self.index.index(), 0);
-                modify_at!(ftsr, 1, self.index.index(), 1);
-            },
-            Edge::RisingFalling => unsafe {
-                modify_at!(rtsr, 1, self.index.index(), 1);
-                modify_at!(ftsr, 1, self.index.index(), 1);
-            },
+        let (rise, fall) = match edge {
+            Edge::Rising => (true, false),
+            Edge::Falling => (false, true),
+            Edge::RisingFalling => (true, true),
+        };
+        unsafe {
+            modify_at!(rtsr, 1, self.index.index(), rise as u32);
+            modify_at!(ftsr, 1, self.index.index(), fall as u32);
         }
     }
 
@@ -612,7 +607,7 @@ macro_rules! af {
 
         paste::paste! {
             #[doc = "Alternate function " $i " (type state)"]
-            pub type $AFi<MODE> = Alternate<$Ui, MODE>;
+            pub type $AFi<OTYPE> = Alternate<$Ui, OTYPE>;
         }
 
         impl<GPIO, INDEX, MODE> Pin<GPIO, INDEX, MODE>
