@@ -158,7 +158,7 @@
 use core::marker::PhantomData;
 
 use crate::{
-    gpio::{self, gpioa, gpiob, PushPull},
+    gpio::{self, gpioa, gpiob},
     hal::PwmPin,
     pac::{RCC, TIM15, TIM16, TIM17, TIM2},
     rcc::Clocks,
