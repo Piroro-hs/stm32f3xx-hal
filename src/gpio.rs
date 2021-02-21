@@ -10,8 +10,8 @@
 //! let mut gpioa = dp.GPIOA.split(&mut rcc.ahb);
 //! ```
 //!
-//! The resulting [Parts](gpioa::Parts) struct contains one field for each
-//! pin, as well as some shared registers.
+//! The resulting [Parts](gpioa::Parts) struct contains one field for each pin, as well as some
+//! shared registers. Every pin type is a specialized version of generic [pin](Pin) struct.
 //!
 //! To use a pin, first use the relevant `into_...` method of the [pin](Pin).
 //!
@@ -24,17 +24,44 @@
 //!
 //! For a complete example, see [examples/toggle.rs]
 //!
+//! ## Pin Configuration
+//!
+//! ### Mode
+//!
+//! Each GPIO pin can be set to various modes by corresponding `into_...` method:
+//!
+//! - **Input**: The output buffer is disabled and the schmitt trigger input is activated
+//! - **Output**: Both the output buffer and the schmitt trigger input is enabled
+//!     - **PushPull**: Output which either drives the pin high or low
+//!     - **OpenDrain**: Output which leaves the gate floating, or pulls it to ground in drain
+//!     mode. Can be used as an input in the `open` configuration
+//! - **Alternate**: Pin mode required when the pin is driven by other peripherals. The schmitt
+//! trigger input is activated. The Output buffer is automatically enabled and disabled by
+//! peripherals. Output behavior is same as the output mode
+//!     - **PushPull**: Output which either drives the pin high or low
+//!     - **OpenDrain**: Output which leaves the gate floating, or pulls it to ground in drain
+//!     mode
+//! - **Analog**: Pin mode required for ADC, DAC, OPAMP, and COMP peripherals. It is also suitable
+//! for minimize energy consumption as the output buffer and the schmitt trigger input is disabled
+//!
+//! ### Internal Resistor
+//!
+//! Weak internal pull-up and pull-down resistors are configurable by calling
+//! [`set_internal_resistor`](Pin::set_internal_resistor) method. `into_..._input` methods are also
+//! available for convenience.
+//!
 //! [InputPin]: embedded_hal::digital::v2::InputPin
 //! [OutputPin]: embedded_hal::digital::v2::OutputPin
 //! [examples/toggle.rs]: https://github.com/stm32-rs/stm32f3xx-hal/blob/v0.6.0/examples/toggle.rs
 
 use core::{convert::Infallible, marker::PhantomData};
 
-use crate::{hal::digital::v2::OutputPin, rcc::AHB};
+use crate::{hal::digital::v2::OutputPin, pac::EXTI, rcc::AHB, syscfg::SysCfg};
 
 #[cfg(feature = "unproven")]
 use crate::hal::digital::v2::{toggleable, InputPin, StatefulOutputPin};
 
+use cfg_if::cfg_if;
 use typenum::{Unsigned, U0, U1, U10, U11, U12, U13, U14, U15, U2, U3, U4, U5, U6, U7, U8, U9};
 
 /// Extension trait to split a GPIO peripheral in independent pins and registers
@@ -67,6 +94,12 @@ mod private {
         fn open_drain(&mut self, i: u8);
     }
 
+    pub trait Ospeedr {
+        fn low(&mut self, i: u8);
+        fn medium(&mut self, i: u8);
+        fn high(&mut self, i: u8);
+    }
+
     pub trait Pupdr {
         fn floating(&mut self, i: u8);
         fn pull_up(&mut self, i: u8);
@@ -81,10 +114,11 @@ mod private {
         type Reg: GpioRegExt + ?Sized;
 
         fn ptr(&self) -> *const Self::Reg;
+        fn port_index(&self) -> u8;
     }
 }
 
-use private::{Afr, GpioRegExt, Moder, Otyper, Pupdr};
+use private::{Afr, GpioRegExt, Moder, Ospeedr, Otyper, Pupdr};
 
 /// Marker trait for GPIO ports
 pub trait Gpio: private::Gpio {}
@@ -95,6 +129,8 @@ pub trait GpioStatic: Gpio {
     type MODER: Moder;
     /// Associated OTYPER register
     type OTYPER: Otyper;
+    /// Associated OSPEEDR register
+    type OSPEEDR: Ospeedr;
     /// Associated PUPDR register
     type PUPDR: Pupdr;
 }
@@ -118,12 +154,16 @@ where
 /// Marker trait for readable pin modes
 pub trait Readable {}
 
-/// Marker trait for PullUppable pin modes
-pub trait PullUppable {} // TODO: better naming
+/// Marker trait for slew rate configurable pin modes
+pub trait OutputSpeed {}
+
+/// Marker trait for active pin modes
+pub trait Active {}
 
 /// Runtime defined GPIO port (type state)
 pub struct Gpiox {
     ptr: *const dyn GpioRegExt,
+    index: u8,
 }
 
 impl private::Gpio for Gpiox {
@@ -131,6 +171,10 @@ impl private::Gpio for Gpiox {
 
     fn ptr(&self) -> *const Self::Reg {
         self.ptr
+    }
+
+    fn port_index(&self) -> u8 {
+        self.index
     }
 }
 
@@ -146,33 +190,56 @@ impl Index for Ux {
 }
 
 /// Input mode (type state)
-pub struct Input<MODE>(PhantomData<MODE>);
-
-/// Floating input (type state)
-pub struct Floating;
-/// Pulled up input (type state)
-pub struct PullUp;
-/// Pulled down input (type state)
-pub struct PullDown;
-
+pub struct Input;
 /// Output mode (type state)
-pub struct Output<MODE>(PhantomData<MODE>);
+pub struct Output<OTYPE>(PhantomData<OTYPE>);
+/// Alternate function (type state)
+pub struct Alternate<AF, OTYPE>(PhantomData<AF>, PhantomData<OTYPE>);
+/// Analog mode (type state)
+pub struct Analog;
 
 /// Push-pull output (type state)
 pub struct PushPull;
 /// Open-drain output (type state)
 pub struct OpenDrain;
 
-/// Alternate function (type state)
-pub struct Alternate<AF, MODE>(PhantomData<AF>, PhantomData<MODE>);
-
-/// Analog mode (type state)
-pub struct Analog;
-
-impl<MODE> Readable for Input<MODE> {}
+impl Readable for Input {}
 impl Readable for Output<OpenDrain> {}
-impl PullUppable for Output<OpenDrain> {}
-impl<AF> PullUppable for Alternate<AF, OpenDrain> {}
+impl<OTYPE> OutputSpeed for Output<OTYPE> {}
+impl<AF, OTYPE> OutputSpeed for Alternate<AF, OTYPE> {}
+impl Active for Input {}
+impl<OTYPE> Active for Output<OTYPE> {}
+impl<AF, OTYPE> Active for Alternate<AF, OTYPE> {}
+
+/// Slew rate configuration
+pub enum Speed {
+    /// Low speed
+    Low,
+    /// Medium speed
+    Medium,
+    /// High speed
+    High,
+}
+
+/// Internal pull-up and pull-down resistor configuration
+pub enum Resistor {
+    /// Floating
+    Floating,
+    /// Pulled up
+    PullUp,
+    /// Pulled down
+    PullDown,
+}
+
+/// GPIO interrupt trigger edge selection
+pub enum Edge {
+    /// Rising edge of voltage
+    Rising,
+    /// Falling edge of voltage
+    Falling,
+    /// Rising and falling edge of voltage
+    RisingFalling,
+}
 
 /// Generic pin
 pub struct Pin<GPIO, INDEX, MODE> {
@@ -191,6 +258,14 @@ pub struct Pin<GPIO, INDEX, MODE> {
 ///
 /// [examples/gpio_erased.rs]: https://github.com/stm32-rs/stm32f3xx-hal/blob/v0.6.0/examples/gpio_erased.rs
 pub type PXx<MODE> = Pin<Gpiox, Ux, MODE>;
+
+macro_rules! modify_at {
+    ($xr:expr, $bits:expr, $i:expr, $val:expr) => {
+        $xr.modify(|r, w| {
+            w.bits(r.bits() & !(u32::MAX >> 32 - $bits << $bits * $i) | $val << $bits * $i)
+        });
+    };
+}
 
 impl<GPIO, INDEX, MODE> Pin<GPIO, INDEX, MODE>
 where
@@ -222,6 +297,7 @@ where
         PXx {
             gpio: Gpiox {
                 ptr: self.gpio.ptr(),
+                index: self.gpio.port_index(),
             },
             index: self.index,
             _mode: self._mode,
@@ -244,34 +320,43 @@ where
     GPIO: GpioStatic,
     INDEX: Index,
 {
-    /// Configures the pin to operate as a floating input pin
+    /// Configures the pin to operate as an input pin
+    pub fn into_input(self, moder: &mut GPIO::MODER) -> Pin<GPIO, INDEX, Input> {
+        moder.input(self.index.index());
+        self.into_mode()
+    }
+
+    /// Convenience method to configure the pin to operate as an input pin
+    /// and set the internal resistor floating
     pub fn into_floating_input(
         self,
         moder: &mut GPIO::MODER,
         pupdr: &mut GPIO::PUPDR,
-    ) -> Pin<GPIO, INDEX, Input<Floating>> {
+    ) -> Pin<GPIO, INDEX, Input> {
         moder.input(self.index.index());
         pupdr.floating(self.index.index());
         self.into_mode()
     }
 
-    /// Configures the pin to operate as a pulled up input pin
+    /// Convenience method to configure the pin to operate as an input pin
+    /// and set the internal resistor pull-up
     pub fn into_pull_up_input(
         self,
         moder: &mut GPIO::MODER,
         pupdr: &mut GPIO::PUPDR,
-    ) -> Pin<GPIO, INDEX, Input<PullUp>> {
+    ) -> Pin<GPIO, INDEX, Input> {
         moder.input(self.index.index());
         pupdr.pull_up(self.index.index());
         self.into_mode()
     }
 
-    /// Configures the pin to operate as a pulled down input pin
+    /// Convenience method to configure the pin to operate as an input pin
+    /// and set the internal resistor pull-down
     pub fn into_pull_down_input(
         self,
         moder: &mut GPIO::MODER,
         pupdr: &mut GPIO::PUPDR,
-    ) -> Pin<GPIO, INDEX, Input<PullDown>> {
+    ) -> Pin<GPIO, INDEX, Input> {
         moder.input(self.index.index());
         pupdr.pull_down(self.index.index());
         self.into_mode()
@@ -315,9 +400,34 @@ impl<GPIO, INDEX, MODE> Pin<GPIO, INDEX, MODE>
 where
     GPIO: GpioStatic,
     INDEX: Index,
-    MODE: PullUppable,
+    MODE: OutputSpeed,
 {
-    /// Enables / disables the internal pull up
+    /// Set pin output slew rate
+    pub fn set_speed(&mut self, ospeedr: &mut GPIO::OSPEEDR, speed: Speed) {
+        match speed {
+            Speed::Low => ospeedr.low(self.index.index()),
+            Speed::Medium => ospeedr.medium(self.index.index()),
+            Speed::High => ospeedr.high(self.index.index()),
+        }
+    }
+}
+
+impl<GPIO, INDEX, MODE> Pin<GPIO, INDEX, MODE>
+where
+    GPIO: GpioStatic,
+    INDEX: Index,
+    MODE: Active,
+{
+    /// Set the internal pull-up and pull-down resistor
+    pub fn set_internal_resistor(&mut self, pupdr: &mut GPIO::PUPDR, resistor: Resistor) {
+        match resistor {
+            Resistor::Floating => pupdr.floating(self.index.index()),
+            Resistor::PullUp => pupdr.pull_up(self.index.index()),
+            Resistor::PullDown => pupdr.pull_down(self.index.index()),
+        }
+    }
+
+    /// Enables / disables the internal pull up (Provided for compatibility with other stm32 HALs)
     pub fn internal_pull_up(&mut self, pupdr: &mut GPIO::PUPDR, on: bool) {
         if on {
             pupdr.pull_up(self.index.index());
@@ -327,7 +437,7 @@ where
     }
 }
 
-impl<GPIO, INDEX, MODE> OutputPin for Pin<GPIO, INDEX, Output<MODE>>
+impl<GPIO, INDEX, OTYPE> OutputPin for Pin<GPIO, INDEX, Output<OTYPE>>
 where
     GPIO: Gpio,
     INDEX: Index,
@@ -367,7 +477,7 @@ where
 }
 
 #[cfg(feature = "unproven")]
-impl<GPIO, INDEX, MODE> StatefulOutputPin for Pin<GPIO, INDEX, Output<MODE>>
+impl<GPIO, INDEX, OTYPE> StatefulOutputPin for Pin<GPIO, INDEX, Output<OTYPE>>
 where
     GPIO: Gpio,
     INDEX: Index,
@@ -383,11 +493,106 @@ where
 }
 
 #[cfg(feature = "unproven")]
-impl<GPIO, INDEX, MODE> toggleable::Default for Pin<GPIO, INDEX, Output<MODE>>
+impl<GPIO, INDEX, OTYPE> toggleable::Default for Pin<GPIO, INDEX, Output<OTYPE>>
 where
     GPIO: Gpio,
     INDEX: Index,
 {
+}
+
+impl<GPIO, INDEX, MODE> Pin<GPIO, INDEX, MODE>
+where
+    GPIO: Gpio,
+    INDEX: Index,
+    MODE: Active,
+{
+    /// Make corresponding EXTI line sensitive to this pin
+    pub fn make_interrupt_source(&mut self, syscfg: &mut SysCfg) {
+        let i = self.index.index() % 4;
+        let extigpionr = self.gpio.port_index() as u32;
+        match self.index.index() {
+            0..=3 => unsafe { modify_at!(syscfg.exticr1, 4, i, extigpionr) },
+            4..=7 => unsafe { modify_at!(syscfg.exticr2, 4, i, extigpionr) },
+            8..=11 => unsafe { modify_at!(syscfg.exticr3, 4, i, extigpionr) },
+            12..=15 => unsafe { modify_at!(syscfg.exticr4, 4, i, extigpionr) },
+            _ => unreachable!(),
+        }
+    }
+
+    /// Generate interrupt on rising edge, falling edge, or both
+    pub fn trigger_on_edge(&mut self, exti: &mut EXTI, edge: Edge) {
+        cfg_if! {
+            // if #[cfg(any(feature = "stm32f373", feature = "stm32f378"))] { // TODO: update after https://github.com/stm32-rs/stm32-rs/pull/496 released
+            if #[cfg(not(any(feature = "stm32f302", feature = "stm32f303", feature = "stm32f334")))] {
+                let rtsr = &exti.rtsr;
+                let ftsr = &exti.ftsr;
+            } else {
+                let rtsr = &exti.rtsr1;
+                let ftsr = &exti.ftsr1;
+            }
+        }
+        let (rise, fall) = match edge {
+            Edge::Rising => (true, false),
+            Edge::Falling => (false, true),
+            Edge::RisingFalling => (true, true),
+        };
+        unsafe {
+            modify_at!(rtsr, 1, self.index.index(), rise as u32);
+            modify_at!(ftsr, 1, self.index.index(), fall as u32);
+        }
+    }
+
+    /// Enable external interrupts from this pin.
+    pub fn enable_interrupt(&mut self, exti: &mut EXTI) {
+        cfg_if! {
+            // if #[cfg(any(feature = "stm32f373", feature = "stm32f378"))] { // TODO: update after https://github.com/stm32-rs/stm32-rs/pull/496 released
+            if #[cfg(not(any(feature = "stm32f302", feature = "stm32f303", feature = "stm32f334")))] {
+                let imr = &exti.imr;
+            } else {
+                let imr = &exti.imr1;
+            }
+        }
+        unsafe { modify_at!(imr, 1, self.index.index(), 1) };
+    }
+
+    /// Disable external interrupts from this pin
+    pub fn disable_interrupt(&mut self, exti: &mut EXTI) {
+        cfg_if! {
+            // if #[cfg(any(feature = "stm32f373", feature = "stm32f378"))] { // TODO: update after https://github.com/stm32-rs/stm32-rs/pull/496 released
+            if #[cfg(not(any(feature = "stm32f302", feature = "stm32f303", feature = "stm32f334")))] {
+                let imr = &exti.imr;
+            } else {
+                let imr = &exti.imr1;
+            }
+        }
+        unsafe { modify_at!(imr, 1, self.index.index(), 0) };
+    }
+
+    /// Clear the interrupt pending bit for this pin
+    pub fn clear_interrupt_pending_bit(&mut self) {
+        cfg_if! {
+            // if #[cfg(any(feature = "stm32f373", feature = "stm32f378"))] { // TODO: update after https://github.com/stm32-rs/stm32-rs/pull/496 released
+            if #[cfg(not(any(feature = "stm32f302", feature = "stm32f303", feature = "stm32f334")))] {
+                let pr = unsafe { &(*EXTI::ptr()).pr };
+            } else {
+                let pr = unsafe { &(*EXTI::ptr()).pr1 };
+            }
+        }
+        unsafe { pr.write(|w| w.bits(1 << self.index.index())) };
+    }
+
+    /// Reads the interrupt pending bit for this pin
+    pub fn check_interrupt(&self) -> bool {
+        cfg_if! {
+            // if #[cfg(any(feature = "stm32f373", feature = "stm32f378"))] { // TODO: update after https://github.com/stm32-rs/stm32-rs/pull/496 released
+            if #[cfg(not(any(feature = "stm32f302", feature = "stm32f303", feature = "stm32f334")))] {
+                let pr = unsafe { &(*EXTI::ptr()).pr };
+            } else {
+                let pr = unsafe { &(*EXTI::ptr()).pr1 };
+            }
+        }
+        pr.read().bits() & (1 << self.index.index()) != 0
+    }
 }
 
 macro_rules! af {
@@ -402,7 +607,7 @@ macro_rules! af {
 
         paste::paste! {
             #[doc = "Alternate function " $i " (type state)"]
-            pub type $AFi<MODE> = Alternate<$Ui, MODE>;
+            pub type $AFi<OTYPE> = Alternate<$Ui, OTYPE>;
         }
 
         impl<GPIO, INDEX, MODE> Pin<GPIO, INDEX, MODE>
@@ -477,22 +682,6 @@ macro_rules! gpio_trait {
                 }
             }
         )+
-    }
-}
-
-macro_rules! afr_trait {
-    ($GPIOX:ident, $AFR:ty, $afr:ident, $offset:expr) => {
-        impl Afr for $AFR {
-            #[inline]
-            fn afx(&mut self, i: u8, x: u8) {
-                let i = i - $offset;
-                unsafe {
-                    (*$GPIOX::ptr()).$afr.modify(|r, w| {
-                        w.bits(r.bits() & !(u32::MAX >> 32 - 4 << 4 * i) | (x as u32) << 4 * i)
-                    });
-                }
-            }
-        }
     };
 }
 
@@ -510,12 +699,7 @@ macro_rules! r_trait {
                 #[inline]
                 fn $fn(&mut self, i: u8) {
                     unsafe {
-                        (*$GPIOX::ptr()).$xr.modify(|r, w| {
-                            w.bits(
-                                r.bits() & !(u32::MAX >> 32 - $bits << $bits * i)
-                                    | ($gpioy::$xr::$enum::$VARIANT as u32) << $bits * i
-                            )
-                        });
+                        modify_at!((*$GPIOX::ptr()).$xr, $bits, i, $gpioy::$xr::$enum::$VARIANT as u32);
                     }
                 }
             )+
@@ -528,9 +712,10 @@ macro_rules! gpio {
         GPIO: $GPIOX:ident,
         gpio: $gpiox:ident,
         Gpio: $Gpiox:ty,
+        port_index: $port_index:literal,
         gpio_mapped: $gpioy:ident,
-        gpio_mapped_ioen: $iopxen:ident,
-        gpio_mapped_iorst: $iopxrst:ident,
+        iopen: $iopxen:ident,
+        ioprst: $iopxrst:ident,
         partially_erased_pin: $PXx:ty,
         pins: {$(
             $PXi:ty: (
@@ -550,6 +735,11 @@ macro_rules! gpio {
             fn ptr(&self) -> *const Self::Reg {
                 crate::pac::$GPIOX::ptr()
             }
+
+            #[inline(always)]
+            fn port_index(&self) -> u8 {
+                $port_index
+            }
         }
 
         impl Gpio for $Gpiox {}
@@ -557,6 +747,7 @@ macro_rules! gpio {
         impl GpioStatic for $Gpiox {
             type MODER = $gpiox::MODER;
             type OTYPER = $gpiox::OTYPER;
+            type OSPEEDR = $gpiox::OSPEEDR;
             type PUPDR = $gpiox::PUPDR;
         }
 
@@ -570,11 +761,11 @@ macro_rules! gpio {
                     rcc::AHB,
                 };
 
-                use super::{Afr, $Gpiox, GpioExt, Moder, Otyper, Pin, Pupdr, Ux};
+                use super::{Afr, $Gpiox, GpioExt, Moder, Ospeedr, Otyper, Pin, Pupdr, Ux};
 
                 #[allow(unused_imports)]
                 use super::{
-                    Input, Floating, PullUp, PullDown, Output, PushPull, OpenDrain, Analog,
+                    Input, Output, Analog, PushPull, OpenDrain,
                     IntoAf0, IntoAf1, IntoAf2, IntoAf3, IntoAf4, IntoAf5, IntoAf6, IntoAf7,
                     IntoAf8, IntoAf9, IntoAf10, IntoAf11, IntoAf12, IntoAf13, IntoAf14, IntoAf15,
                     AF0, AF1, AF2, AF3, AF4, AF5, AF6, AF7, AF8, AF9, AF10, AF11, AF12, AF13, AF14, AF15,
@@ -593,6 +784,8 @@ macro_rules! gpio {
                     pub afrl: AFRL,
                     /// Opaque MODER register
                     pub moder: MODER,
+                    /// Opaque OSPEEDR register
+                    pub ospeedr: OSPEEDR,
                     /// Opaque OTYPER register
                     pub otyper: OTYPER,
                     /// Opaque PUPDR register
@@ -615,6 +808,7 @@ macro_rules! gpio {
                             afrh: AFRH(()),
                             afrl: AFRL(()),
                             moder: MODER(()),
+                            ospeedr: OSPEEDR(()),
                             otyper: OTYPER(()),
                             pupdr: PUPDR(()),
                             $(
@@ -631,12 +825,22 @@ macro_rules! gpio {
                 /// Opaque AFRH register
                 pub struct AFRH(());
 
-                afr_trait!($GPIOX, AFRH, afrh, 8);
+                impl Afr for AFRH {
+                    #[inline]
+                    fn afx(&mut self, i: u8, x: u8) {
+                        unsafe { modify_at!((*$GPIOX::ptr()).afrh, 4, i - 8, x as u32); }
+                    }
+                }
 
                 /// Opaque AFRL register
                 pub struct AFRL(());
 
-                afr_trait!($GPIOX, AFRL, afrl, 0);
+                impl Afr for AFRL {
+                    #[inline]
+                    fn afx(&mut self, i: u8, x: u8) {
+                        unsafe { modify_at!((*$GPIOX::ptr()).afrl, 4, i, x as u32); }
+                    }
+                }
 
                 /// Opaque MODER register
                 pub struct MODER(());
@@ -648,6 +852,18 @@ macro_rules! gpio {
                         fn output { OUTPUT }
                         fn alternate { ALTERNATE }
                         fn analog { ANALOG }
+                    }
+                }
+
+                /// Opaque OSPEEDR register
+                pub struct OSPEEDR(());
+
+                r_trait! {
+                    ($GPIOX, $gpioy::ospeedr::OSPEEDR15_A, 2);
+                    impl Ospeedr for OSPEEDR {
+                        fn low { LOWSPEED }
+                        fn medium { MEDIUMSPEED }
+                        fn high { VERYHIGHSPEED } // TODO: update after https://github.com/stm32-rs/stm32-rs/pull/466 released
                     }
                 }
 
@@ -695,12 +911,12 @@ macro_rules! gpio {
         pacs: $pacs:tt,
         ports: [$(
             {
-                port: ($X:ident/$x:ident, pac: $gpioy:ident),
+                port: ($X:ident/$x:ident, $port_index:literal, $gpioy:ident),
                 pins: [$(
                     $i:literal => {
                         reset: $MODE:ty,
                         afr: $LH:ident,
-                        af: [$( $af:literal ),*]
+                        af: [$($af:literal),*]
                     },
                 )+],
             },
@@ -713,9 +929,10 @@ macro_rules! gpio {
                     GPIO: [<GPIO $X>],
                     gpio: [<gpio $x>],
                     Gpio: [<Gpio $x>],
+                    port_index: $port_index,
                     gpio_mapped: $gpioy,
-                    gpio_mapped_ioen: [<iop $x en>],
-                    gpio_mapped_iorst: [<iop $x rst>],
+                    iopen: [<iop $x en>],
+                    ioprst: [<iop $x rst>],
                     partially_erased_pin: [<P $X x>],
                     pins: {$(
                         [<P $X $i>]: (
@@ -728,86 +945,86 @@ macro_rules! gpio {
     };
 }
 // auto-generated using codegen
-// STM32CubeMX DB release: DB.6.0.0
+// STM32CubeMX DB release: DB.6.0.10
 
 #[cfg(feature = "gpio-f302")]
 gpio!({
     pacs: [gpioa, gpiob, gpioc],
     ports: [
         {
-            port: (A/a, pac: gpioa),
+            port: (A/a, 0, gpioa),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [1, 3, 7, 15] },
-                1 => { reset: Input<Floating>, afr: L, af: [0, 1, 3, 7, 9, 15] },
-                2 => { reset: Input<Floating>, afr: L, af: [1, 3, 7, 8, 9, 15] },
-                3 => { reset: Input<Floating>, afr: L, af: [1, 3, 7, 9, 15] },
-                4 => { reset: Input<Floating>, afr: L, af: [3, 6, 7, 15] },
-                5 => { reset: Input<Floating>, afr: L, af: [1, 3, 15] },
-                6 => { reset: Input<Floating>, afr: L, af: [1, 3, 6, 15] },
-                7 => { reset: Input<Floating>, afr: L, af: [1, 3, 6, 15] },
-                8 => { reset: Input<Floating>, afr: H, af: [0, 3, 4, 5, 6, 7, 15] },
-                9 => { reset: Input<Floating>, afr: H, af: [2, 3, 4, 5, 6, 7, 9, 10, 15] },
-                10 => { reset: Input<Floating>, afr: H, af: [1, 3, 4, 5, 6, 7, 8, 10, 15] },
-                11 => { reset: Input<Floating>, afr: H, af: [5, 6, 7, 9, 11, 12, 15] },
-                12 => { reset: Input<Floating>, afr: H, af: [1, 5, 6, 7, 8, 9, 11, 15] },
+                0 => { reset: Input, afr: L, af: [1, 3, 7, 15] },
+                1 => { reset: Input, afr: L, af: [0, 1, 3, 7, 9, 15] },
+                2 => { reset: Input, afr: L, af: [1, 3, 7, 8, 9, 15] },
+                3 => { reset: Input, afr: L, af: [1, 3, 7, 9, 15] },
+                4 => { reset: Input, afr: L, af: [3, 6, 7, 15] },
+                5 => { reset: Input, afr: L, af: [1, 3, 15] },
+                6 => { reset: Input, afr: L, af: [1, 3, 6, 15] },
+                7 => { reset: Input, afr: L, af: [1, 3, 6, 15] },
+                8 => { reset: Input, afr: H, af: [0, 3, 4, 5, 6, 7, 15] },
+                9 => { reset: Input, afr: H, af: [2, 3, 4, 5, 6, 7, 9, 10, 15] },
+                10 => { reset: Input, afr: H, af: [1, 3, 4, 5, 6, 7, 8, 10, 15] },
+                11 => { reset: Input, afr: H, af: [5, 6, 7, 9, 11, 12, 15] },
+                12 => { reset: Input, afr: H, af: [1, 5, 6, 7, 8, 9, 11, 15] },
                 13 => { reset: AF0<PushPull>, afr: H, af: [0, 1, 3, 5, 7, 15] },
                 14 => { reset: AF0<PushPull>, afr: H, af: [0, 3, 4, 6, 7, 15] },
                 15 => { reset: AF0<PushPull>, afr: H, af: [0, 1, 3, 4, 6, 7, 9, 15] },
             ],
         },
         {
-            port: (B/b, pac: gpiob),
+            port: (B/b, 1, gpiob),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [3, 6, 15] },
-                1 => { reset: Input<Floating>, afr: L, af: [3, 6, 8, 15] },
-                2 => { reset: Input<Floating>, afr: L, af: [3, 15] },
+                0 => { reset: Input, afr: L, af: [3, 6, 15] },
+                1 => { reset: Input, afr: L, af: [3, 6, 8, 15] },
+                2 => { reset: Input, afr: L, af: [3, 15] },
                 3 => { reset: AF0<PushPull>, afr: L, af: [0, 1, 3, 6, 7, 15] },
                 4 => { reset: AF0<PushPull>, afr: L, af: [0, 1, 3, 6, 7, 10, 15] },
-                5 => { reset: Input<Floating>, afr: L, af: [1, 4, 6, 7, 8, 10, 15] },
-                6 => { reset: Input<Floating>, afr: L, af: [1, 3, 4, 7, 15] },
-                7 => { reset: Input<Floating>, afr: L, af: [1, 3, 4, 7, 15] },
-                8 => { reset: Input<Floating>, afr: H, af: [1, 3, 4, 7, 9, 12, 15] },
-                9 => { reset: Input<Floating>, afr: H, af: [1, 4, 6, 7, 8, 9, 15] },
-                10 => { reset: Input<Floating>, afr: H, af: [1, 3, 7, 15] },
-                11 => { reset: Input<Floating>, afr: H, af: [1, 3, 7, 15] },
-                12 => { reset: Input<Floating>, afr: H, af: [3, 4, 5, 6, 7, 15] },
-                13 => { reset: Input<Floating>, afr: H, af: [3, 5, 6, 7, 15] },
-                14 => { reset: Input<Floating>, afr: H, af: [1, 3, 5, 6, 7, 15] },
-                15 => { reset: Input<Floating>, afr: H, af: [0, 1, 2, 4, 5, 15] },
+                5 => { reset: Input, afr: L, af: [1, 4, 6, 7, 8, 10, 15] },
+                6 => { reset: Input, afr: L, af: [1, 3, 4, 7, 15] },
+                7 => { reset: Input, afr: L, af: [1, 3, 4, 7, 15] },
+                8 => { reset: Input, afr: H, af: [1, 3, 4, 7, 9, 12, 15] },
+                9 => { reset: Input, afr: H, af: [1, 4, 6, 7, 8, 9, 15] },
+                10 => { reset: Input, afr: H, af: [1, 3, 7, 15] },
+                11 => { reset: Input, afr: H, af: [1, 3, 7, 15] },
+                12 => { reset: Input, afr: H, af: [3, 4, 5, 6, 7, 15] },
+                13 => { reset: Input, afr: H, af: [3, 5, 6, 7, 15] },
+                14 => { reset: Input, afr: H, af: [1, 3, 5, 6, 7, 15] },
+                15 => { reset: Input, afr: H, af: [0, 1, 2, 4, 5, 15] },
             ],
         },
         {
-            port: (C/c, pac: gpioc),
+            port: (C/c, 2, gpioc),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [1, 2] },
-                1 => { reset: Input<Floating>, afr: L, af: [1, 2] },
-                2 => { reset: Input<Floating>, afr: L, af: [1, 2] },
-                3 => { reset: Input<Floating>, afr: L, af: [1, 2, 6] },
-                4 => { reset: Input<Floating>, afr: L, af: [1, 2, 7] },
-                5 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 7] },
-                6 => { reset: Input<Floating>, afr: L, af: [1, 6, 7] },
-                7 => { reset: Input<Floating>, afr: L, af: [1, 6] },
-                8 => { reset: Input<Floating>, afr: H, af: [1] },
-                9 => { reset: Input<Floating>, afr: H, af: [1, 3, 5] },
-                10 => { reset: Input<Floating>, afr: H, af: [1, 6, 7] },
-                11 => { reset: Input<Floating>, afr: H, af: [1, 6, 7] },
-                12 => { reset: Input<Floating>, afr: H, af: [1, 6, 7] },
-                13 => { reset: Input<Floating>, afr: H, af: [4] },
-                14 => { reset: Input<Floating>, afr: H, af: [] },
-                15 => { reset: Input<Floating>, afr: H, af: [] },
+                0 => { reset: Input, afr: L, af: [1, 2] },
+                1 => { reset: Input, afr: L, af: [1, 2] },
+                2 => { reset: Input, afr: L, af: [1, 2] },
+                3 => { reset: Input, afr: L, af: [1, 2, 6] },
+                4 => { reset: Input, afr: L, af: [1, 2, 7] },
+                5 => { reset: Input, afr: L, af: [1, 2, 3, 7] },
+                6 => { reset: Input, afr: L, af: [1, 6, 7] },
+                7 => { reset: Input, afr: L, af: [1, 6] },
+                8 => { reset: Input, afr: H, af: [1] },
+                9 => { reset: Input, afr: H, af: [1, 3, 5] },
+                10 => { reset: Input, afr: H, af: [1, 6, 7] },
+                11 => { reset: Input, afr: H, af: [1, 6, 7] },
+                12 => { reset: Input, afr: H, af: [1, 6, 7] },
+                13 => { reset: Input, afr: H, af: [4] },
+                14 => { reset: Input, afr: H, af: [] },
+                15 => { reset: Input, afr: H, af: [] },
             ],
         },
         {
-            port: (D/d, pac: gpioc),
+            port: (D/d, 3, gpioc),
             pins: [
-                2 => { reset: Input<Floating>, afr: L, af: [1] },
+                2 => { reset: Input, afr: L, af: [1] },
             ],
         },
         {
-            port: (F/f, pac: gpioc),
+            port: (F/f, 5, gpioc),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [4, 5, 6] },
-                1 => { reset: Input<Floating>, afr: L, af: [4, 5] },
+                0 => { reset: Input, afr: L, af: [4, 5, 6] },
+                1 => { reset: Input, afr: L, af: [4, 5] },
             ],
         },
     ],
@@ -818,158 +1035,158 @@ gpio!({
     pacs: [gpioa, gpiob, gpioc],
     ports: [
         {
-            port: (A/a, pac: gpioa),
+            port: (A/a, 0, gpioa),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [1, 3, 7, 8, 9, 10, 15] },
-                1 => { reset: Input<Floating>, afr: L, af: [0, 1, 3, 7, 9, 15] },
-                2 => { reset: Input<Floating>, afr: L, af: [1, 3, 7, 8, 9, 15] },
-                3 => { reset: Input<Floating>, afr: L, af: [1, 3, 7, 9, 15] },
-                4 => { reset: Input<Floating>, afr: L, af: [2, 3, 5, 6, 7, 15] },
-                5 => { reset: Input<Floating>, afr: L, af: [1, 3, 5, 15] },
-                6 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 4, 5, 6, 8, 15] },
-                7 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 4, 5, 6, 15] },
-                8 => { reset: Input<Floating>, afr: H, af: [0, 3, 4, 5, 6, 7, 8, 10, 15] },
-                9 => { reset: Input<Floating>, afr: H, af: [2, 3, 4, 5, 6, 7, 8, 9, 10, 15] },
-                10 => { reset: Input<Floating>, afr: H, af: [1, 3, 4, 5, 6, 7, 8, 10, 11, 15] },
-                11 => { reset: Input<Floating>, afr: H, af: [5, 6, 7, 8, 9, 10, 11, 12, 15] },
-                12 => { reset: Input<Floating>, afr: H, af: [1, 5, 6, 7, 8, 9, 10, 11, 15] },
+                0 => { reset: Input, afr: L, af: [1, 3, 7, 8, 9, 10, 15] },
+                1 => { reset: Input, afr: L, af: [0, 1, 3, 7, 9, 15] },
+                2 => { reset: Input, afr: L, af: [1, 3, 7, 8, 9, 15] },
+                3 => { reset: Input, afr: L, af: [1, 3, 7, 9, 15] },
+                4 => { reset: Input, afr: L, af: [2, 3, 5, 6, 7, 15] },
+                5 => { reset: Input, afr: L, af: [1, 3, 5, 15] },
+                6 => { reset: Input, afr: L, af: [1, 2, 3, 4, 5, 6, 8, 15] },
+                7 => { reset: Input, afr: L, af: [1, 2, 3, 4, 5, 6, 15] },
+                8 => { reset: Input, afr: H, af: [0, 3, 4, 5, 6, 7, 8, 10, 15] },
+                9 => { reset: Input, afr: H, af: [2, 3, 4, 5, 6, 7, 8, 9, 10, 15] },
+                10 => { reset: Input, afr: H, af: [1, 3, 4, 5, 6, 7, 8, 10, 11, 15] },
+                11 => { reset: Input, afr: H, af: [5, 6, 7, 8, 9, 10, 11, 12, 15] },
+                12 => { reset: Input, afr: H, af: [1, 5, 6, 7, 8, 9, 10, 11, 15] },
                 13 => { reset: AF0<PushPull>, afr: H, af: [0, 1, 3, 5, 7, 10, 15] },
                 14 => { reset: AF0<PushPull>, afr: H, af: [0, 3, 4, 5, 6, 7, 15] },
                 15 => { reset: AF0<PushPull>, afr: H, af: [0, 1, 2, 3, 4, 5, 6, 7, 9, 15] },
             ],
         },
         {
-            port: (B/b, pac: gpiob),
+            port: (B/b, 1, gpiob),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [2, 3, 4, 6, 15] },
-                1 => { reset: Input<Floating>, afr: L, af: [2, 3, 4, 6, 8, 15] },
-                2 => { reset: Input<Floating>, afr: L, af: [3, 15] },
+                0 => { reset: Input, afr: L, af: [2, 3, 4, 6, 15] },
+                1 => { reset: Input, afr: L, af: [2, 3, 4, 6, 8, 15] },
+                2 => { reset: Input, afr: L, af: [3, 15] },
                 3 => { reset: AF0<PushPull>, afr: L, af: [0, 1, 2, 3, 4, 5, 6, 7, 10, 15] },
                 4 => { reset: AF0<PushPull>, afr: L, af: [0, 1, 2, 3, 4, 5, 6, 7, 10, 15] },
-                5 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 4, 5, 6, 7, 8, 10, 15] },
-                6 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 4, 5, 6, 7, 10, 15] },
-                7 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 4, 5, 7, 10, 12, 15] },
-                8 => { reset: Input<Floating>, afr: H, af: [1, 2, 3, 4, 7, 8, 9, 10, 12, 15] },
-                9 => { reset: Input<Floating>, afr: H, af: [1, 2, 4, 6, 7, 8, 9, 10, 15] },
-                10 => { reset: Input<Floating>, afr: H, af: [1, 3, 7, 15] },
-                11 => { reset: Input<Floating>, afr: H, af: [1, 3, 7, 15] },
-                12 => { reset: Input<Floating>, afr: H, af: [3, 4, 5, 6, 7, 15] },
-                13 => { reset: Input<Floating>, afr: H, af: [3, 5, 6, 7, 15] },
-                14 => { reset: Input<Floating>, afr: H, af: [1, 3, 5, 6, 7, 15] },
-                15 => { reset: Input<Floating>, afr: H, af: [0, 1, 2, 4, 5, 15] },
+                5 => { reset: Input, afr: L, af: [1, 2, 3, 4, 5, 6, 7, 8, 10, 15] },
+                6 => { reset: Input, afr: L, af: [1, 2, 3, 4, 5, 6, 7, 10, 15] },
+                7 => { reset: Input, afr: L, af: [1, 2, 3, 4, 5, 7, 10, 12, 15] },
+                8 => { reset: Input, afr: H, af: [1, 2, 3, 4, 7, 8, 9, 10, 12, 15] },
+                9 => { reset: Input, afr: H, af: [1, 2, 4, 6, 7, 8, 9, 10, 15] },
+                10 => { reset: Input, afr: H, af: [1, 3, 7, 15] },
+                11 => { reset: Input, afr: H, af: [1, 3, 7, 15] },
+                12 => { reset: Input, afr: H, af: [3, 4, 5, 6, 7, 15] },
+                13 => { reset: Input, afr: H, af: [3, 5, 6, 7, 15] },
+                14 => { reset: Input, afr: H, af: [1, 3, 5, 6, 7, 15] },
+                15 => { reset: Input, afr: H, af: [0, 1, 2, 4, 5, 15] },
             ],
         },
         {
-            port: (C/c, pac: gpioc),
+            port: (C/c, 2, gpioc),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [1, 2] },
-                1 => { reset: Input<Floating>, afr: L, af: [1, 2] },
-                2 => { reset: Input<Floating>, afr: L, af: [1, 2, 3] },
-                3 => { reset: Input<Floating>, afr: L, af: [1, 2, 6] },
-                4 => { reset: Input<Floating>, afr: L, af: [1, 2, 7] },
-                5 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 7] },
-                6 => { reset: Input<Floating>, afr: L, af: [1, 2, 4, 6, 7] },
-                7 => { reset: Input<Floating>, afr: L, af: [1, 2, 4, 6, 7] },
-                8 => { reset: Input<Floating>, afr: H, af: [1, 2, 4, 7] },
-                9 => { reset: Input<Floating>, afr: H, af: [1, 2, 3, 4, 5, 6] },
-                10 => { reset: Input<Floating>, afr: H, af: [1, 4, 5, 6, 7] },
-                11 => { reset: Input<Floating>, afr: H, af: [1, 4, 5, 6, 7] },
-                12 => { reset: Input<Floating>, afr: H, af: [1, 4, 5, 6, 7] },
-                13 => { reset: Input<Floating>, afr: H, af: [1, 4] },
-                14 => { reset: Input<Floating>, afr: H, af: [1] },
-                15 => { reset: Input<Floating>, afr: H, af: [1] },
+                0 => { reset: Input, afr: L, af: [1, 2] },
+                1 => { reset: Input, afr: L, af: [1, 2] },
+                2 => { reset: Input, afr: L, af: [1, 2, 3] },
+                3 => { reset: Input, afr: L, af: [1, 2, 6] },
+                4 => { reset: Input, afr: L, af: [1, 2, 7] },
+                5 => { reset: Input, afr: L, af: [1, 2, 3, 7] },
+                6 => { reset: Input, afr: L, af: [1, 2, 4, 6, 7] },
+                7 => { reset: Input, afr: L, af: [1, 2, 4, 6, 7] },
+                8 => { reset: Input, afr: H, af: [1, 2, 4, 7] },
+                9 => { reset: Input, afr: H, af: [1, 2, 3, 4, 5, 6] },
+                10 => { reset: Input, afr: H, af: [1, 4, 5, 6, 7] },
+                11 => { reset: Input, afr: H, af: [1, 4, 5, 6, 7] },
+                12 => { reset: Input, afr: H, af: [1, 4, 5, 6, 7] },
+                13 => { reset: Input, afr: H, af: [1, 4] },
+                14 => { reset: Input, afr: H, af: [1] },
+                15 => { reset: Input, afr: H, af: [1] },
             ],
         },
         {
-            port: (D/d, pac: gpioc),
+            port: (D/d, 3, gpioc),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [1, 7, 12] },
-                1 => { reset: Input<Floating>, afr: L, af: [1, 4, 6, 7, 12] },
-                2 => { reset: Input<Floating>, afr: L, af: [1, 2, 4, 5] },
-                3 => { reset: Input<Floating>, afr: L, af: [1, 2, 7, 12] },
-                4 => { reset: Input<Floating>, afr: L, af: [1, 2, 7, 12] },
-                5 => { reset: Input<Floating>, afr: L, af: [1, 7, 12] },
-                6 => { reset: Input<Floating>, afr: L, af: [1, 2, 7, 12] },
-                7 => { reset: Input<Floating>, afr: L, af: [1, 2, 7, 12] },
-                8 => { reset: Input<Floating>, afr: H, af: [1, 7, 12] },
-                9 => { reset: Input<Floating>, afr: H, af: [1, 7, 12] },
-                10 => { reset: Input<Floating>, afr: H, af: [1, 7, 12] },
-                11 => { reset: Input<Floating>, afr: H, af: [1, 7, 12] },
-                12 => { reset: Input<Floating>, afr: H, af: [1, 2, 3, 7, 12] },
-                13 => { reset: Input<Floating>, afr: H, af: [1, 2, 3, 12] },
-                14 => { reset: Input<Floating>, afr: H, af: [1, 2, 3, 12] },
-                15 => { reset: Input<Floating>, afr: H, af: [1, 2, 3, 6, 12] },
+                0 => { reset: Input, afr: L, af: [1, 7, 12] },
+                1 => { reset: Input, afr: L, af: [1, 4, 6, 7, 12] },
+                2 => { reset: Input, afr: L, af: [1, 2, 4, 5] },
+                3 => { reset: Input, afr: L, af: [1, 2, 7, 12] },
+                4 => { reset: Input, afr: L, af: [1, 2, 7, 12] },
+                5 => { reset: Input, afr: L, af: [1, 7, 12] },
+                6 => { reset: Input, afr: L, af: [1, 2, 7, 12] },
+                7 => { reset: Input, afr: L, af: [1, 2, 7, 12] },
+                8 => { reset: Input, afr: H, af: [1, 7, 12] },
+                9 => { reset: Input, afr: H, af: [1, 7, 12] },
+                10 => { reset: Input, afr: H, af: [1, 7, 12] },
+                11 => { reset: Input, afr: H, af: [1, 7, 12] },
+                12 => { reset: Input, afr: H, af: [1, 2, 3, 7, 12] },
+                13 => { reset: Input, afr: H, af: [1, 2, 3, 12] },
+                14 => { reset: Input, afr: H, af: [1, 2, 3, 12] },
+                15 => { reset: Input, afr: H, af: [1, 2, 3, 6, 12] },
             ],
         },
         {
-            port: (E/e, pac: gpioc),
+            port: (E/e, 4, gpioc),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [1, 2, 4, 6, 7, 12] },
-                1 => { reset: Input<Floating>, afr: L, af: [1, 4, 6, 7, 12] },
-                2 => { reset: Input<Floating>, afr: L, af: [0, 1, 2, 3, 5, 6, 12] },
-                3 => { reset: Input<Floating>, afr: L, af: [0, 1, 2, 3, 5, 6, 12] },
-                4 => { reset: Input<Floating>, afr: L, af: [0, 1, 2, 3, 5, 6, 12] },
-                5 => { reset: Input<Floating>, afr: L, af: [0, 1, 2, 3, 5, 6, 12] },
-                6 => { reset: Input<Floating>, afr: L, af: [0, 1, 5, 6, 12] },
-                7 => { reset: Input<Floating>, afr: L, af: [1, 2, 12] },
-                8 => { reset: Input<Floating>, afr: H, af: [1, 2, 12] },
-                9 => { reset: Input<Floating>, afr: H, af: [1, 2, 12] },
-                10 => { reset: Input<Floating>, afr: H, af: [1, 2, 12] },
-                11 => { reset: Input<Floating>, afr: H, af: [1, 2, 5, 12] },
-                12 => { reset: Input<Floating>, afr: H, af: [1, 2, 5, 12] },
-                13 => { reset: Input<Floating>, afr: H, af: [1, 2, 5, 12] },
-                14 => { reset: Input<Floating>, afr: H, af: [1, 2, 5, 6, 12] },
-                15 => { reset: Input<Floating>, afr: H, af: [1, 2, 7, 12] },
+                0 => { reset: Input, afr: L, af: [1, 2, 4, 6, 7, 12] },
+                1 => { reset: Input, afr: L, af: [1, 4, 6, 7, 12] },
+                2 => { reset: Input, afr: L, af: [0, 1, 2, 3, 5, 6, 12] },
+                3 => { reset: Input, afr: L, af: [0, 1, 2, 3, 5, 6, 12] },
+                4 => { reset: Input, afr: L, af: [0, 1, 2, 3, 5, 6, 12] },
+                5 => { reset: Input, afr: L, af: [0, 1, 2, 3, 5, 6, 12] },
+                6 => { reset: Input, afr: L, af: [0, 1, 5, 6, 12] },
+                7 => { reset: Input, afr: L, af: [1, 2, 12] },
+                8 => { reset: Input, afr: H, af: [1, 2, 12] },
+                9 => { reset: Input, afr: H, af: [1, 2, 12] },
+                10 => { reset: Input, afr: H, af: [1, 2, 12] },
+                11 => { reset: Input, afr: H, af: [1, 2, 5, 12] },
+                12 => { reset: Input, afr: H, af: [1, 2, 5, 12] },
+                13 => { reset: Input, afr: H, af: [1, 2, 5, 12] },
+                14 => { reset: Input, afr: H, af: [1, 2, 5, 6, 12] },
+                15 => { reset: Input, afr: H, af: [1, 2, 7, 12] },
             ],
         },
         {
-            port: (F/f, pac: gpioc),
+            port: (F/f, 5, gpioc),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [1, 4, 5, 6] },
-                1 => { reset: Input<Floating>, afr: L, af: [1, 4, 5] },
-                2 => { reset: Input<Floating>, afr: L, af: [1, 2, 12] },
-                3 => { reset: Input<Floating>, afr: L, af: [1, 2, 12] },
-                4 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 12] },
-                5 => { reset: Input<Floating>, afr: L, af: [1, 2, 12] },
-                6 => { reset: Input<Floating>, afr: L, af: [1, 2, 4, 7, 12] },
-                7 => { reset: Input<Floating>, afr: L, af: [1, 2, 12] },
-                8 => { reset: Input<Floating>, afr: H, af: [1, 2, 12] },
-                9 => { reset: Input<Floating>, afr: H, af: [1, 2, 3, 5, 12] },
-                10 => { reset: Input<Floating>, afr: H, af: [1, 2, 3, 5, 12] },
-                11 => { reset: Input<Floating>, afr: H, af: [1, 2] },
-                12 => { reset: Input<Floating>, afr: H, af: [1, 2, 12] },
-                13 => { reset: Input<Floating>, afr: H, af: [1, 2, 12] },
-                14 => { reset: Input<Floating>, afr: H, af: [1, 2, 12] },
-                15 => { reset: Input<Floating>, afr: H, af: [1, 2, 12] },
+                0 => { reset: Input, afr: L, af: [1, 4, 5, 6] },
+                1 => { reset: Input, afr: L, af: [1, 4, 5] },
+                2 => { reset: Input, afr: L, af: [1, 2, 12] },
+                3 => { reset: Input, afr: L, af: [1, 2, 12] },
+                4 => { reset: Input, afr: L, af: [1, 2, 3, 12] },
+                5 => { reset: Input, afr: L, af: [1, 2, 12] },
+                6 => { reset: Input, afr: L, af: [1, 2, 4, 7, 12] },
+                7 => { reset: Input, afr: L, af: [1, 2, 12] },
+                8 => { reset: Input, afr: H, af: [1, 2, 12] },
+                9 => { reset: Input, afr: H, af: [1, 2, 3, 5, 12] },
+                10 => { reset: Input, afr: H, af: [1, 2, 3, 5, 12] },
+                11 => { reset: Input, afr: H, af: [1, 2] },
+                12 => { reset: Input, afr: H, af: [1, 2, 12] },
+                13 => { reset: Input, afr: H, af: [1, 2, 12] },
+                14 => { reset: Input, afr: H, af: [1, 2, 12] },
+                15 => { reset: Input, afr: H, af: [1, 2, 12] },
             ],
         },
         {
-            port: (G/g, pac: gpioc),
+            port: (G/g, 6, gpioc),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [1, 2, 12] },
-                1 => { reset: Input<Floating>, afr: L, af: [1, 2, 12] },
-                2 => { reset: Input<Floating>, afr: L, af: [1, 2, 12] },
-                3 => { reset: Input<Floating>, afr: L, af: [1, 2, 12] },
-                4 => { reset: Input<Floating>, afr: L, af: [1, 2, 12] },
-                5 => { reset: Input<Floating>, afr: L, af: [1, 2, 12] },
-                6 => { reset: Input<Floating>, afr: L, af: [1, 12] },
-                7 => { reset: Input<Floating>, afr: L, af: [1, 12] },
-                8 => { reset: Input<Floating>, afr: H, af: [1] },
-                9 => { reset: Input<Floating>, afr: H, af: [1, 12] },
-                10 => { reset: Input<Floating>, afr: H, af: [1, 12] },
-                11 => { reset: Input<Floating>, afr: H, af: [1, 12] },
-                12 => { reset: Input<Floating>, afr: H, af: [1, 12] },
-                13 => { reset: Input<Floating>, afr: H, af: [1, 12] },
-                14 => { reset: Input<Floating>, afr: H, af: [1, 12] },
-                15 => { reset: Input<Floating>, afr: H, af: [1] },
+                0 => { reset: Input, afr: L, af: [1, 2, 12] },
+                1 => { reset: Input, afr: L, af: [1, 2, 12] },
+                2 => { reset: Input, afr: L, af: [1, 2, 12] },
+                3 => { reset: Input, afr: L, af: [1, 2, 12] },
+                4 => { reset: Input, afr: L, af: [1, 2, 12] },
+                5 => { reset: Input, afr: L, af: [1, 2, 12] },
+                6 => { reset: Input, afr: L, af: [1, 12] },
+                7 => { reset: Input, afr: L, af: [1, 12] },
+                8 => { reset: Input, afr: H, af: [1] },
+                9 => { reset: Input, afr: H, af: [1, 12] },
+                10 => { reset: Input, afr: H, af: [1, 12] },
+                11 => { reset: Input, afr: H, af: [1, 12] },
+                12 => { reset: Input, afr: H, af: [1, 12] },
+                13 => { reset: Input, afr: H, af: [1, 12] },
+                14 => { reset: Input, afr: H, af: [1, 12] },
+                15 => { reset: Input, afr: H, af: [1] },
             ],
         },
         {
-            port: (H/h, pac: gpioc),
+            port: (H/h, 7, gpioc),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [1, 2, 12] },
-                1 => { reset: Input<Floating>, afr: L, af: [1, 2, 12] },
-                2 => { reset: Input<Floating>, afr: L, af: [1] },
+                0 => { reset: Input, afr: L, af: [1, 2, 12] },
+                1 => { reset: Input, afr: L, af: [1, 2, 12] },
+                2 => { reset: Input, afr: L, af: [1] },
             ],
         },
     ],
@@ -980,120 +1197,120 @@ gpio!({
     pacs: [gpioa, gpiob, gpioc],
     ports: [
         {
-            port: (A/a, pac: gpioa),
+            port: (A/a, 0, gpioa),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [1, 3, 7, 8, 9, 10, 15] },
-                1 => { reset: Input<Floating>, afr: L, af: [0, 1, 3, 7, 9, 15] },
-                2 => { reset: Input<Floating>, afr: L, af: [1, 3, 7, 8, 9, 15] },
-                3 => { reset: Input<Floating>, afr: L, af: [1, 3, 7, 9, 15] },
-                4 => { reset: Input<Floating>, afr: L, af: [2, 3, 5, 6, 7, 15] },
-                5 => { reset: Input<Floating>, afr: L, af: [1, 3, 5, 15] },
-                6 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 4, 5, 6, 8, 15] },
-                7 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 4, 5, 6, 8, 15] },
-                8 => { reset: Input<Floating>, afr: H, af: [0, 4, 5, 6, 7, 8, 10, 15] },
-                9 => { reset: Input<Floating>, afr: H, af: [3, 4, 5, 6, 7, 8, 9, 10, 15] },
-                10 => { reset: Input<Floating>, afr: H, af: [1, 3, 4, 6, 7, 8, 10, 11, 15] },
-                11 => { reset: Input<Floating>, afr: H, af: [6, 7, 8, 9, 10, 11, 12, 14, 15] },
-                12 => { reset: Input<Floating>, afr: H, af: [1, 6, 7, 8, 9, 10, 11, 14, 15] },
+                0 => { reset: Input, afr: L, af: [1, 3, 7, 8, 9, 10, 15] },
+                1 => { reset: Input, afr: L, af: [0, 1, 3, 7, 9, 15] },
+                2 => { reset: Input, afr: L, af: [1, 3, 7, 8, 9, 15] },
+                3 => { reset: Input, afr: L, af: [1, 3, 7, 9, 15] },
+                4 => { reset: Input, afr: L, af: [2, 3, 5, 6, 7, 15] },
+                5 => { reset: Input, afr: L, af: [1, 3, 5, 15] },
+                6 => { reset: Input, afr: L, af: [1, 2, 3, 4, 5, 6, 8, 15] },
+                7 => { reset: Input, afr: L, af: [1, 2, 3, 4, 5, 6, 8, 15] },
+                8 => { reset: Input, afr: H, af: [0, 4, 5, 6, 7, 8, 10, 15] },
+                9 => { reset: Input, afr: H, af: [3, 4, 5, 6, 7, 8, 9, 10, 15] },
+                10 => { reset: Input, afr: H, af: [1, 3, 4, 6, 7, 8, 10, 11, 15] },
+                11 => { reset: Input, afr: H, af: [6, 7, 8, 9, 10, 11, 12, 14, 15] },
+                12 => { reset: Input, afr: H, af: [1, 6, 7, 8, 9, 10, 11, 14, 15] },
                 13 => { reset: AF0<PushPull>, afr: H, af: [0, 1, 3, 5, 7, 10, 15] },
                 14 => { reset: AF0<PushPull>, afr: H, af: [0, 3, 4, 5, 6, 7, 15] },
                 15 => { reset: AF0<PushPull>, afr: H, af: [0, 1, 2, 4, 5, 6, 7, 9, 15] },
             ],
         },
         {
-            port: (B/b, pac: gpiob),
+            port: (B/b, 1, gpiob),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [2, 3, 4, 6, 15] },
-                1 => { reset: Input<Floating>, afr: L, af: [2, 3, 4, 6, 8, 15] },
-                2 => { reset: Input<Floating>, afr: L, af: [3, 15] },
+                0 => { reset: Input, afr: L, af: [2, 3, 4, 6, 15] },
+                1 => { reset: Input, afr: L, af: [2, 3, 4, 6, 8, 15] },
+                2 => { reset: Input, afr: L, af: [3, 15] },
                 3 => { reset: AF0<PushPull>, afr: L, af: [0, 1, 2, 3, 4, 5, 6, 7, 10, 15] },
                 4 => { reset: AF0<PushPull>, afr: L, af: [0, 1, 2, 3, 4, 5, 6, 7, 10, 15] },
-                5 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 4, 5, 6, 7, 10, 15] },
-                6 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 4, 5, 6, 7, 10, 15] },
-                7 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 4, 5, 7, 10, 15] },
-                8 => { reset: Input<Floating>, afr: H, af: [1, 2, 3, 4, 8, 9, 10, 12, 15] },
-                9 => { reset: Input<Floating>, afr: H, af: [1, 2, 4, 6, 8, 9, 10, 15] },
-                10 => { reset: Input<Floating>, afr: H, af: [1, 3, 7, 15] },
-                11 => { reset: Input<Floating>, afr: H, af: [1, 3, 7, 15] },
-                12 => { reset: Input<Floating>, afr: H, af: [3, 4, 5, 6, 7, 15] },
-                13 => { reset: Input<Floating>, afr: H, af: [3, 5, 6, 7, 15] },
-                14 => { reset: Input<Floating>, afr: H, af: [1, 3, 5, 6, 7, 15] },
-                15 => { reset: Input<Floating>, afr: H, af: [0, 1, 2, 4, 5, 15] },
+                5 => { reset: Input, afr: L, af: [1, 2, 3, 4, 5, 6, 7, 10, 15] },
+                6 => { reset: Input, afr: L, af: [1, 2, 3, 4, 5, 6, 7, 10, 15] },
+                7 => { reset: Input, afr: L, af: [1, 2, 3, 4, 5, 7, 10, 15] },
+                8 => { reset: Input, afr: H, af: [1, 2, 3, 4, 8, 9, 10, 12, 15] },
+                9 => { reset: Input, afr: H, af: [1, 2, 4, 6, 8, 9, 10, 15] },
+                10 => { reset: Input, afr: H, af: [1, 3, 7, 15] },
+                11 => { reset: Input, afr: H, af: [1, 3, 7, 15] },
+                12 => { reset: Input, afr: H, af: [3, 4, 5, 6, 7, 15] },
+                13 => { reset: Input, afr: H, af: [3, 5, 6, 7, 15] },
+                14 => { reset: Input, afr: H, af: [1, 3, 5, 6, 7, 15] },
+                15 => { reset: Input, afr: H, af: [0, 1, 2, 4, 5, 15] },
             ],
         },
         {
-            port: (C/c, pac: gpioc),
+            port: (C/c, 2, gpioc),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [1] },
-                1 => { reset: Input<Floating>, afr: L, af: [1] },
-                2 => { reset: Input<Floating>, afr: L, af: [1, 3] },
-                3 => { reset: Input<Floating>, afr: L, af: [1, 6] },
-                4 => { reset: Input<Floating>, afr: L, af: [1, 7] },
-                5 => { reset: Input<Floating>, afr: L, af: [1, 3, 7] },
-                6 => { reset: Input<Floating>, afr: L, af: [1, 2, 4, 6, 7] },
-                7 => { reset: Input<Floating>, afr: L, af: [1, 2, 4, 6, 7] },
-                8 => { reset: Input<Floating>, afr: H, af: [1, 2, 4, 7] },
-                9 => { reset: Input<Floating>, afr: H, af: [1, 2, 4, 5, 6] },
-                10 => { reset: Input<Floating>, afr: H, af: [1, 4, 5, 6, 7] },
-                11 => { reset: Input<Floating>, afr: H, af: [1, 4, 5, 6, 7] },
-                12 => { reset: Input<Floating>, afr: H, af: [1, 4, 5, 6, 7] },
-                13 => { reset: Input<Floating>, afr: H, af: [4] },
-                14 => { reset: Input<Floating>, afr: H, af: [] },
-                15 => { reset: Input<Floating>, afr: H, af: [] },
+                0 => { reset: Input, afr: L, af: [1] },
+                1 => { reset: Input, afr: L, af: [1] },
+                2 => { reset: Input, afr: L, af: [1, 3] },
+                3 => { reset: Input, afr: L, af: [1, 6] },
+                4 => { reset: Input, afr: L, af: [1, 7] },
+                5 => { reset: Input, afr: L, af: [1, 3, 7] },
+                6 => { reset: Input, afr: L, af: [1, 2, 4, 6, 7] },
+                7 => { reset: Input, afr: L, af: [1, 2, 4, 6, 7] },
+                8 => { reset: Input, afr: H, af: [1, 2, 4, 7] },
+                9 => { reset: Input, afr: H, af: [1, 2, 4, 5, 6] },
+                10 => { reset: Input, afr: H, af: [1, 4, 5, 6, 7] },
+                11 => { reset: Input, afr: H, af: [1, 4, 5, 6, 7] },
+                12 => { reset: Input, afr: H, af: [1, 4, 5, 6, 7] },
+                13 => { reset: Input, afr: H, af: [4] },
+                14 => { reset: Input, afr: H, af: [] },
+                15 => { reset: Input, afr: H, af: [] },
             ],
         },
         {
-            port: (D/d, pac: gpioc),
+            port: (D/d, 3, gpioc),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [1, 7] },
-                1 => { reset: Input<Floating>, afr: L, af: [1, 4, 6, 7] },
-                2 => { reset: Input<Floating>, afr: L, af: [1, 2, 4, 5] },
-                3 => { reset: Input<Floating>, afr: L, af: [1, 2, 7] },
-                4 => { reset: Input<Floating>, afr: L, af: [1, 2, 7] },
-                5 => { reset: Input<Floating>, afr: L, af: [1, 7] },
-                6 => { reset: Input<Floating>, afr: L, af: [1, 2, 7] },
-                7 => { reset: Input<Floating>, afr: L, af: [1, 2, 7] },
-                8 => { reset: Input<Floating>, afr: H, af: [1, 7] },
-                9 => { reset: Input<Floating>, afr: H, af: [1, 7] },
-                10 => { reset: Input<Floating>, afr: H, af: [1, 7] },
-                11 => { reset: Input<Floating>, afr: H, af: [1, 7] },
-                12 => { reset: Input<Floating>, afr: H, af: [1, 2, 3, 7] },
-                13 => { reset: Input<Floating>, afr: H, af: [1, 2, 3] },
-                14 => { reset: Input<Floating>, afr: H, af: [1, 2, 3] },
-                15 => { reset: Input<Floating>, afr: H, af: [1, 2, 3, 6] },
+                0 => { reset: Input, afr: L, af: [1, 7] },
+                1 => { reset: Input, afr: L, af: [1, 4, 6, 7] },
+                2 => { reset: Input, afr: L, af: [1, 2, 4, 5] },
+                3 => { reset: Input, afr: L, af: [1, 2, 7] },
+                4 => { reset: Input, afr: L, af: [1, 2, 7] },
+                5 => { reset: Input, afr: L, af: [1, 7] },
+                6 => { reset: Input, afr: L, af: [1, 2, 7] },
+                7 => { reset: Input, afr: L, af: [1, 2, 7] },
+                8 => { reset: Input, afr: H, af: [1, 7] },
+                9 => { reset: Input, afr: H, af: [1, 7] },
+                10 => { reset: Input, afr: H, af: [1, 7] },
+                11 => { reset: Input, afr: H, af: [1, 7] },
+                12 => { reset: Input, afr: H, af: [1, 2, 3, 7] },
+                13 => { reset: Input, afr: H, af: [1, 2, 3] },
+                14 => { reset: Input, afr: H, af: [1, 2, 3] },
+                15 => { reset: Input, afr: H, af: [1, 2, 3, 6] },
             ],
         },
         {
-            port: (E/e, pac: gpioc),
+            port: (E/e, 4, gpioc),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [1, 2, 4, 7] },
-                1 => { reset: Input<Floating>, afr: L, af: [1, 4, 7] },
-                2 => { reset: Input<Floating>, afr: L, af: [0, 1, 2, 3] },
-                3 => { reset: Input<Floating>, afr: L, af: [0, 1, 2, 3] },
-                4 => { reset: Input<Floating>, afr: L, af: [0, 1, 2, 3] },
-                5 => { reset: Input<Floating>, afr: L, af: [0, 1, 2, 3] },
-                6 => { reset: Input<Floating>, afr: L, af: [0, 1] },
-                7 => { reset: Input<Floating>, afr: L, af: [1, 2] },
-                8 => { reset: Input<Floating>, afr: H, af: [1, 2] },
-                9 => { reset: Input<Floating>, afr: H, af: [1, 2] },
-                10 => { reset: Input<Floating>, afr: H, af: [1, 2] },
-                11 => { reset: Input<Floating>, afr: H, af: [1, 2] },
-                12 => { reset: Input<Floating>, afr: H, af: [1, 2] },
-                13 => { reset: Input<Floating>, afr: H, af: [1, 2] },
-                14 => { reset: Input<Floating>, afr: H, af: [1, 2, 6] },
-                15 => { reset: Input<Floating>, afr: H, af: [1, 2, 7] },
+                0 => { reset: Input, afr: L, af: [1, 2, 4, 7] },
+                1 => { reset: Input, afr: L, af: [1, 4, 7] },
+                2 => { reset: Input, afr: L, af: [0, 1, 2, 3] },
+                3 => { reset: Input, afr: L, af: [0, 1, 2, 3] },
+                4 => { reset: Input, afr: L, af: [0, 1, 2, 3] },
+                5 => { reset: Input, afr: L, af: [0, 1, 2, 3] },
+                6 => { reset: Input, afr: L, af: [0, 1] },
+                7 => { reset: Input, afr: L, af: [1, 2] },
+                8 => { reset: Input, afr: H, af: [1, 2] },
+                9 => { reset: Input, afr: H, af: [1, 2] },
+                10 => { reset: Input, afr: H, af: [1, 2] },
+                11 => { reset: Input, afr: H, af: [1, 2] },
+                12 => { reset: Input, afr: H, af: [1, 2] },
+                13 => { reset: Input, afr: H, af: [1, 2] },
+                14 => { reset: Input, afr: H, af: [1, 2, 6] },
+                15 => { reset: Input, afr: H, af: [1, 2, 7] },
             ],
         },
         {
-            port: (F/f, pac: gpioc),
+            port: (F/f, 5, gpioc),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [4, 6] },
-                1 => { reset: Input<Floating>, afr: L, af: [4] },
-                2 => { reset: Input<Floating>, afr: L, af: [1] },
-                4 => { reset: Input<Floating>, afr: L, af: [1, 2] },
-                6 => { reset: Input<Floating>, afr: L, af: [1, 2, 4, 7] },
-                9 => { reset: Input<Floating>, afr: H, af: [1, 3, 5] },
-                10 => { reset: Input<Floating>, afr: H, af: [1, 3, 5] },
+                0 => { reset: Input, afr: L, af: [4, 6] },
+                1 => { reset: Input, afr: L, af: [4] },
+                2 => { reset: Input, afr: L, af: [1] },
+                4 => { reset: Input, afr: L, af: [1, 2] },
+                6 => { reset: Input, afr: L, af: [1, 2, 4, 7] },
+                9 => { reset: Input, afr: H, af: [1, 3, 5] },
+                10 => { reset: Input, afr: H, af: [1, 3, 5] },
             ],
         },
     ],
@@ -1104,79 +1321,79 @@ gpio!({
     pacs: [gpioa, gpiob, gpioc],
     ports: [
         {
-            port: (A/a, pac: gpioa),
+            port: (A/a, 0, gpioa),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [1, 3, 7, 15] },
-                1 => { reset: Input<Floating>, afr: L, af: [1, 3, 7, 9, 15] },
-                2 => { reset: Input<Floating>, afr: L, af: [1, 3, 7, 8, 9, 15] },
-                3 => { reset: Input<Floating>, afr: L, af: [1, 3, 7, 9, 15] },
-                4 => { reset: Input<Floating>, afr: L, af: [2, 3, 5, 7, 15] },
-                5 => { reset: Input<Floating>, afr: L, af: [1, 3, 5, 15] },
-                6 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 5, 6, 13, 15] },
-                7 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 5, 6, 15] },
-                8 => { reset: Input<Floating>, afr: H, af: [0, 6, 7, 13, 15] },
-                9 => { reset: Input<Floating>, afr: H, af: [3, 6, 7, 9, 10, 13, 15] },
-                10 => { reset: Input<Floating>, afr: H, af: [1, 3, 6, 7, 8, 10, 13, 15] },
-                11 => { reset: Input<Floating>, afr: H, af: [6, 7, 9, 11, 12, 13, 15] },
-                12 => { reset: Input<Floating>, afr: H, af: [1, 6, 7, 8, 9, 11, 13, 15] },
+                0 => { reset: Input, afr: L, af: [1, 3, 7, 15] },
+                1 => { reset: Input, afr: L, af: [1, 3, 7, 9, 15] },
+                2 => { reset: Input, afr: L, af: [1, 3, 7, 8, 9, 15] },
+                3 => { reset: Input, afr: L, af: [1, 3, 7, 9, 15] },
+                4 => { reset: Input, afr: L, af: [2, 3, 5, 7, 15] },
+                5 => { reset: Input, afr: L, af: [1, 3, 5, 15] },
+                6 => { reset: Input, afr: L, af: [1, 2, 3, 5, 6, 13, 15] },
+                7 => { reset: Input, afr: L, af: [1, 2, 3, 5, 6, 15] },
+                8 => { reset: Input, afr: H, af: [0, 6, 7, 13, 15] },
+                9 => { reset: Input, afr: H, af: [3, 6, 7, 9, 10, 13, 15] },
+                10 => { reset: Input, afr: H, af: [1, 3, 6, 7, 8, 10, 13, 15] },
+                11 => { reset: Input, afr: H, af: [6, 7, 9, 11, 12, 13, 15] },
+                12 => { reset: Input, afr: H, af: [1, 6, 7, 8, 9, 11, 13, 15] },
                 13 => { reset: AF0<PushPull>, afr: H, af: [0, 1, 3, 5, 7, 15] },
                 14 => { reset: AF0<PushPull>, afr: H, af: [0, 3, 4, 6, 7, 15] },
                 15 => { reset: AF0<PushPull>, afr: H, af: [0, 1, 3, 4, 5, 7, 9, 13, 15] },
             ],
         },
         {
-            port: (B/b, pac: gpiob),
+            port: (B/b, 1, gpiob),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [2, 3, 6, 15] },
-                1 => { reset: Input<Floating>, afr: L, af: [2, 3, 6, 8, 13, 15] },
-                2 => { reset: Input<Floating>, afr: L, af: [3, 13, 15] },
+                0 => { reset: Input, afr: L, af: [2, 3, 6, 15] },
+                1 => { reset: Input, afr: L, af: [2, 3, 6, 8, 13, 15] },
+                2 => { reset: Input, afr: L, af: [3, 13, 15] },
                 3 => { reset: AF0<PushPull>, afr: L, af: [0, 1, 3, 5, 7, 10, 12, 13, 15] },
                 4 => { reset: AF0<PushPull>, afr: L, af: [0, 1, 2, 3, 5, 7, 10, 13, 15] },
-                5 => { reset: Input<Floating>, afr: L, af: [1, 2, 4, 5, 7, 10, 13, 15] },
-                6 => { reset: Input<Floating>, afr: L, af: [1, 3, 4, 7, 12, 13, 15] },
-                7 => { reset: Input<Floating>, afr: L, af: [1, 3, 4, 7, 10, 13, 15] },
-                8 => { reset: Input<Floating>, afr: H, af: [1, 3, 4, 7, 9, 12, 13, 15] },
-                9 => { reset: Input<Floating>, afr: H, af: [1, 4, 6, 7, 8, 9, 13, 15] },
-                10 => { reset: Input<Floating>, afr: H, af: [1, 3, 7, 13, 15] },
-                11 => { reset: Input<Floating>, afr: H, af: [1, 3, 7, 13, 15] },
-                12 => { reset: Input<Floating>, afr: H, af: [3, 6, 7, 13, 15] },
-                13 => { reset: Input<Floating>, afr: H, af: [3, 6, 7, 13, 15] },
-                14 => { reset: Input<Floating>, afr: H, af: [1, 3, 6, 7, 13, 15] },
-                15 => { reset: Input<Floating>, afr: H, af: [1, 2, 4, 13, 15] },
+                5 => { reset: Input, afr: L, af: [1, 2, 4, 5, 7, 10, 13, 15] },
+                6 => { reset: Input, afr: L, af: [1, 3, 4, 7, 12, 13, 15] },
+                7 => { reset: Input, afr: L, af: [1, 3, 4, 7, 10, 13, 15] },
+                8 => { reset: Input, afr: H, af: [1, 3, 4, 7, 9, 12, 13, 15] },
+                9 => { reset: Input, afr: H, af: [1, 4, 6, 7, 8, 9, 13, 15] },
+                10 => { reset: Input, afr: H, af: [1, 3, 7, 13, 15] },
+                11 => { reset: Input, afr: H, af: [1, 3, 7, 13, 15] },
+                12 => { reset: Input, afr: H, af: [3, 6, 7, 13, 15] },
+                13 => { reset: Input, afr: H, af: [3, 6, 7, 13, 15] },
+                14 => { reset: Input, afr: H, af: [1, 3, 6, 7, 13, 15] },
+                15 => { reset: Input, afr: H, af: [1, 2, 4, 13, 15] },
             ],
         },
         {
-            port: (C/c, pac: gpioc),
+            port: (C/c, 2, gpioc),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [1, 2] },
-                1 => { reset: Input<Floating>, afr: L, af: [1, 2] },
-                2 => { reset: Input<Floating>, afr: L, af: [1, 2] },
-                3 => { reset: Input<Floating>, afr: L, af: [1, 2, 6] },
-                4 => { reset: Input<Floating>, afr: L, af: [1, 2, 7] },
-                5 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 7] },
-                6 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 7] },
-                7 => { reset: Input<Floating>, afr: L, af: [1, 2, 3] },
-                8 => { reset: Input<Floating>, afr: H, af: [1, 2, 3] },
-                9 => { reset: Input<Floating>, afr: H, af: [1, 2, 3] },
-                10 => { reset: Input<Floating>, afr: H, af: [1, 7] },
-                11 => { reset: Input<Floating>, afr: H, af: [1, 3, 7] },
-                12 => { reset: Input<Floating>, afr: H, af: [1, 3, 7] },
-                13 => { reset: Input<Floating>, afr: H, af: [4] },
-                14 => { reset: Input<Floating>, afr: H, af: [] },
-                15 => { reset: Input<Floating>, afr: H, af: [] },
+                0 => { reset: Input, afr: L, af: [1, 2] },
+                1 => { reset: Input, afr: L, af: [1, 2] },
+                2 => { reset: Input, afr: L, af: [1, 2] },
+                3 => { reset: Input, afr: L, af: [1, 2, 6] },
+                4 => { reset: Input, afr: L, af: [1, 2, 7] },
+                5 => { reset: Input, afr: L, af: [1, 2, 3, 7] },
+                6 => { reset: Input, afr: L, af: [1, 2, 3, 7] },
+                7 => { reset: Input, afr: L, af: [1, 2, 3] },
+                8 => { reset: Input, afr: H, af: [1, 2, 3] },
+                9 => { reset: Input, afr: H, af: [1, 2, 3] },
+                10 => { reset: Input, afr: H, af: [1, 7] },
+                11 => { reset: Input, afr: H, af: [1, 3, 7] },
+                12 => { reset: Input, afr: H, af: [1, 3, 7] },
+                13 => { reset: Input, afr: H, af: [4] },
+                14 => { reset: Input, afr: H, af: [] },
+                15 => { reset: Input, afr: H, af: [] },
             ],
         },
         {
-            port: (D/d, pac: gpioc),
+            port: (D/d, 3, gpioc),
             pins: [
-                2 => { reset: Input<Floating>, afr: L, af: [1, 2] },
+                2 => { reset: Input, afr: L, af: [1, 2] },
             ],
         },
         {
-            port: (F/f, pac: gpioc),
+            port: (F/f, 5, gpioc),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [6] },
-                1 => { reset: Input<Floating>, afr: L, af: [] },
+                0 => { reset: Input, afr: L, af: [6] },
+                1 => { reset: Input, afr: L, af: [] },
             ],
         },
     ],
@@ -1187,118 +1404,118 @@ gpio!({
     pacs: [gpioa, gpiob, gpioc, gpiod],
     ports: [
         {
-            port: (A/a, pac: gpioa),
+            port: (A/a, 0, gpioa),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 7, 8, 11, 15] },
-                1 => { reset: Input<Floating>, afr: L, af: [0, 1, 2, 3, 6, 7, 9, 11, 15] },
-                2 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 6, 7, 8, 9, 11, 15] },
-                3 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 6, 7, 9, 11, 15] },
-                4 => { reset: Input<Floating>, afr: L, af: [2, 3, 5, 6, 7, 10, 15] },
-                5 => { reset: Input<Floating>, afr: L, af: [1, 3, 5, 7, 9, 10, 15] },
-                6 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 5, 8, 9, 15] },
-                7 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 5, 8, 9, 15] },
-                8 => { reset: Input<Floating>, afr: H, af: [0, 2, 4, 5, 7, 10, 15] },
-                9 => { reset: Input<Floating>, afr: H, af: [2, 3, 4, 5, 7, 9, 10, 15] },
-                10 => { reset: Input<Floating>, afr: H, af: [1, 3, 4, 5, 7, 9, 10, 15] },
-                11 => { reset: Input<Floating>, afr: H, af: [2, 5, 6, 7, 8, 9, 10, 14, 15] },
-                12 => { reset: Input<Floating>, afr: H, af: [1, 2, 6, 7, 8, 9, 10, 14, 15] },
+                0 => { reset: Input, afr: L, af: [1, 2, 3, 7, 8, 11, 15] },
+                1 => { reset: Input, afr: L, af: [0, 1, 2, 3, 6, 7, 9, 11, 15] },
+                2 => { reset: Input, afr: L, af: [1, 2, 3, 6, 7, 8, 9, 11, 15] },
+                3 => { reset: Input, afr: L, af: [1, 2, 3, 6, 7, 9, 11, 15] },
+                4 => { reset: Input, afr: L, af: [2, 3, 5, 6, 7, 10, 15] },
+                5 => { reset: Input, afr: L, af: [1, 3, 5, 7, 9, 10, 15] },
+                6 => { reset: Input, afr: L, af: [1, 2, 3, 5, 8, 9, 15] },
+                7 => { reset: Input, afr: L, af: [1, 2, 3, 5, 8, 9, 15] },
+                8 => { reset: Input, afr: H, af: [0, 2, 4, 5, 7, 10, 15] },
+                9 => { reset: Input, afr: H, af: [2, 3, 4, 5, 7, 9, 10, 15] },
+                10 => { reset: Input, afr: H, af: [1, 3, 4, 5, 7, 9, 10, 15] },
+                11 => { reset: Input, afr: H, af: [2, 5, 6, 7, 8, 9, 10, 14, 15] },
+                12 => { reset: Input, afr: H, af: [1, 2, 6, 7, 8, 9, 10, 14, 15] },
                 13 => { reset: AF0<PushPull>, afr: H, af: [0, 1, 2, 3, 5, 6, 7, 10, 15] },
                 14 => { reset: AF0<PushPull>, afr: H, af: [0, 3, 4, 10, 15] },
                 15 => { reset: AF0<PushPull>, afr: H, af: [0, 1, 3, 4, 5, 6, 10, 15] },
             ],
         },
         {
-            port: (B/b, pac: gpiob),
+            port: (B/b, 1, gpiob),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [2, 3, 5, 10, 15] },
-                1 => { reset: Input<Floating>, afr: L, af: [2, 3, 15] },
-                2 => { reset: Input<Floating>, afr: L, af: [15] },
+                0 => { reset: Input, afr: L, af: [2, 3, 5, 10, 15] },
+                1 => { reset: Input, afr: L, af: [2, 3, 15] },
+                2 => { reset: Input, afr: L, af: [15] },
                 3 => { reset: AF0<PushPull>, afr: L, af: [0, 1, 2, 3, 5, 6, 7, 9, 10, 15] },
                 4 => { reset: AF0<PushPull>, afr: L, af: [0, 1, 2, 3, 5, 6, 7, 9, 10, 15] },
-                5 => { reset: Input<Floating>, afr: L, af: [1, 2, 4, 5, 6, 7, 10, 11, 15] },
-                6 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 4, 7, 9, 10, 11, 15] },
-                7 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 4, 7, 9, 10, 11, 15] },
-                8 => { reset: Input<Floating>, afr: H, af: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 15] },
-                9 => { reset: Input<Floating>, afr: H, af: [1, 2, 4, 5, 6, 7, 8, 9, 11, 15] },
-                10 => { reset: Input<Floating>, afr: H, af: [1, 3, 5, 6, 7, 15] },
-                14 => { reset: Input<Floating>, afr: H, af: [1, 3, 5, 7, 9, 15] },
-                15 => { reset: Input<Floating>, afr: H, af: [0, 1, 2, 3, 5, 9, 15] },
+                5 => { reset: Input, afr: L, af: [1, 2, 4, 5, 6, 7, 10, 11, 15] },
+                6 => { reset: Input, afr: L, af: [1, 2, 3, 4, 7, 9, 10, 11, 15] },
+                7 => { reset: Input, afr: L, af: [1, 2, 3, 4, 7, 9, 10, 11, 15] },
+                8 => { reset: Input, afr: H, af: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 15] },
+                9 => { reset: Input, afr: H, af: [1, 2, 4, 5, 6, 7, 8, 9, 11, 15] },
+                10 => { reset: Input, afr: H, af: [1, 3, 5, 6, 7, 15] },
+                14 => { reset: Input, afr: H, af: [1, 3, 5, 7, 9, 15] },
+                15 => { reset: Input, afr: H, af: [0, 1, 2, 3, 5, 9, 15] },
             ],
         },
         {
-            port: (C/c, pac: gpioc),
+            port: (C/c, 2, gpioc),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [1, 2] },
-                1 => { reset: Input<Floating>, afr: L, af: [1, 2] },
-                2 => { reset: Input<Floating>, afr: L, af: [1, 2, 5] },
-                3 => { reset: Input<Floating>, afr: L, af: [1, 2, 5] },
-                4 => { reset: Input<Floating>, afr: L, af: [1, 2, 3, 7] },
-                5 => { reset: Input<Floating>, afr: L, af: [1, 3, 7] },
-                6 => { reset: Input<Floating>, afr: L, af: [1, 2, 5] },
-                7 => { reset: Input<Floating>, afr: L, af: [1, 2, 5] },
-                8 => { reset: Input<Floating>, afr: H, af: [1, 2, 5] },
-                9 => { reset: Input<Floating>, afr: H, af: [1, 2, 5] },
-                10 => { reset: Input<Floating>, afr: H, af: [1, 2, 6, 7] },
-                11 => { reset: Input<Floating>, afr: H, af: [1, 2, 6, 7] },
-                12 => { reset: Input<Floating>, afr: H, af: [1, 2, 6, 7] },
-                13 => { reset: Input<Floating>, afr: H, af: [] },
-                14 => { reset: Input<Floating>, afr: H, af: [] },
-                15 => { reset: Input<Floating>, afr: H, af: [] },
+                0 => { reset: Input, afr: L, af: [1, 2] },
+                1 => { reset: Input, afr: L, af: [1, 2] },
+                2 => { reset: Input, afr: L, af: [1, 2, 5] },
+                3 => { reset: Input, afr: L, af: [1, 2, 5] },
+                4 => { reset: Input, afr: L, af: [1, 2, 3, 7] },
+                5 => { reset: Input, afr: L, af: [1, 3, 7] },
+                6 => { reset: Input, afr: L, af: [1, 2, 5] },
+                7 => { reset: Input, afr: L, af: [1, 2, 5] },
+                8 => { reset: Input, afr: H, af: [1, 2, 5] },
+                9 => { reset: Input, afr: H, af: [1, 2, 5] },
+                10 => { reset: Input, afr: H, af: [1, 2, 6, 7] },
+                11 => { reset: Input, afr: H, af: [1, 2, 6, 7] },
+                12 => { reset: Input, afr: H, af: [1, 2, 6, 7] },
+                13 => { reset: Input, afr: H, af: [] },
+                14 => { reset: Input, afr: H, af: [] },
+                15 => { reset: Input, afr: H, af: [] },
             ],
         },
         {
-            port: (D/d, pac: gpiod),
+            port: (D/d, 3, gpiod),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [1, 2, 7] },
-                1 => { reset: Input<Floating>, afr: L, af: [1, 2, 7] },
-                2 => { reset: Input<Floating>, afr: L, af: [1, 2] },
-                3 => { reset: Input<Floating>, afr: L, af: [1, 5, 7] },
-                4 => { reset: Input<Floating>, afr: L, af: [1, 5, 7] },
-                5 => { reset: Input<Floating>, afr: L, af: [1, 7] },
-                6 => { reset: Input<Floating>, afr: L, af: [1, 5, 7] },
-                7 => { reset: Input<Floating>, afr: L, af: [1, 5, 7] },
-                8 => { reset: Input<Floating>, afr: H, af: [1, 3, 5, 7] },
-                9 => { reset: Input<Floating>, afr: H, af: [1, 3, 7] },
-                10 => { reset: Input<Floating>, afr: H, af: [1, 7] },
-                11 => { reset: Input<Floating>, afr: H, af: [1, 7] },
-                12 => { reset: Input<Floating>, afr: H, af: [1, 2, 3, 7] },
-                13 => { reset: Input<Floating>, afr: H, af: [1, 2, 3] },
-                14 => { reset: Input<Floating>, afr: H, af: [1, 2, 3] },
-                15 => { reset: Input<Floating>, afr: H, af: [1, 2, 3] },
+                0 => { reset: Input, afr: L, af: [1, 2, 7] },
+                1 => { reset: Input, afr: L, af: [1, 2, 7] },
+                2 => { reset: Input, afr: L, af: [1, 2] },
+                3 => { reset: Input, afr: L, af: [1, 5, 7] },
+                4 => { reset: Input, afr: L, af: [1, 5, 7] },
+                5 => { reset: Input, afr: L, af: [1, 7] },
+                6 => { reset: Input, afr: L, af: [1, 5, 7] },
+                7 => { reset: Input, afr: L, af: [1, 5, 7] },
+                8 => { reset: Input, afr: H, af: [1, 3, 5, 7] },
+                9 => { reset: Input, afr: H, af: [1, 3, 7] },
+                10 => { reset: Input, afr: H, af: [1, 7] },
+                11 => { reset: Input, afr: H, af: [1, 7] },
+                12 => { reset: Input, afr: H, af: [1, 2, 3, 7] },
+                13 => { reset: Input, afr: H, af: [1, 2, 3] },
+                14 => { reset: Input, afr: H, af: [1, 2, 3] },
+                15 => { reset: Input, afr: H, af: [1, 2, 3] },
             ],
         },
         {
-            port: (E/e, pac: gpioc),
+            port: (E/e, 4, gpioc),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [1, 2, 7] },
-                1 => { reset: Input<Floating>, afr: L, af: [1, 7] },
-                2 => { reset: Input<Floating>, afr: L, af: [0, 1, 3] },
-                3 => { reset: Input<Floating>, afr: L, af: [0, 1, 3] },
-                4 => { reset: Input<Floating>, afr: L, af: [0, 1, 3] },
-                5 => { reset: Input<Floating>, afr: L, af: [0, 1, 3] },
-                6 => { reset: Input<Floating>, afr: L, af: [0, 1] },
-                7 => { reset: Input<Floating>, afr: L, af: [1] },
-                8 => { reset: Input<Floating>, afr: H, af: [1] },
-                9 => { reset: Input<Floating>, afr: H, af: [1] },
-                10 => { reset: Input<Floating>, afr: H, af: [1] },
-                11 => { reset: Input<Floating>, afr: H, af: [1] },
-                12 => { reset: Input<Floating>, afr: H, af: [1] },
-                13 => { reset: Input<Floating>, afr: H, af: [1] },
-                14 => { reset: Input<Floating>, afr: H, af: [1] },
-                15 => { reset: Input<Floating>, afr: H, af: [1, 7] },
+                0 => { reset: Input, afr: L, af: [1, 2, 7] },
+                1 => { reset: Input, afr: L, af: [1, 7] },
+                2 => { reset: Input, afr: L, af: [0, 1, 3] },
+                3 => { reset: Input, afr: L, af: [0, 1, 3] },
+                4 => { reset: Input, afr: L, af: [0, 1, 3] },
+                5 => { reset: Input, afr: L, af: [0, 1, 3] },
+                6 => { reset: Input, afr: L, af: [0, 1] },
+                7 => { reset: Input, afr: L, af: [1] },
+                8 => { reset: Input, afr: H, af: [1] },
+                9 => { reset: Input, afr: H, af: [1] },
+                10 => { reset: Input, afr: H, af: [1] },
+                11 => { reset: Input, afr: H, af: [1] },
+                12 => { reset: Input, afr: H, af: [1] },
+                13 => { reset: Input, afr: H, af: [1] },
+                14 => { reset: Input, afr: H, af: [1] },
+                15 => { reset: Input, afr: H, af: [1, 7] },
             ],
         },
         {
-            port: (F/f, pac: gpioc),
+            port: (F/f, 5, gpioc),
             pins: [
-                0 => { reset: Input<Floating>, afr: L, af: [4] },
-                1 => { reset: Input<Floating>, afr: L, af: [4] },
-                2 => { reset: Input<Floating>, afr: L, af: [1, 4] },
-                4 => { reset: Input<Floating>, afr: L, af: [1] },
-                6 => { reset: Input<Floating>, afr: L, af: [1, 2, 4, 5, 7] },
-                7 => { reset: Input<Floating>, afr: L, af: [1, 4, 7] },
-                9 => { reset: Input<Floating>, afr: H, af: [1, 2] },
-                10 => { reset: Input<Floating>, afr: H, af: [1] },
+                0 => { reset: Input, afr: L, af: [4] },
+                1 => { reset: Input, afr: L, af: [4] },
+                2 => { reset: Input, afr: L, af: [1, 4] },
+                4 => { reset: Input, afr: L, af: [1] },
+                6 => { reset: Input, afr: L, af: [1, 2, 4, 5, 7] },
+                7 => { reset: Input, afr: L, af: [1, 4, 7] },
+                9 => { reset: Input, afr: H, af: [1, 2] },
+                10 => { reset: Input, afr: H, af: [1] },
             ],
         },
     ],

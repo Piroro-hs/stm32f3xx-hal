@@ -192,6 +192,7 @@ cfg_if::cfg_if! {
         pub mod rtc;
         pub mod serial;
         pub mod spi;
+        pub mod syscfg;
         pub mod time;
         pub mod timer;
         #[cfg(all(

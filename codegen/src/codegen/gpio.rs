@@ -86,12 +86,24 @@ fn gen_pac_list(ports: &[Port], feature: &str) {
 
 fn gen_port(port: &Port, feature: &str) -> Result<()> {
     let pac_module = get_port_pac_module(port, feature);
+    let port_index = match port.id {
+        'A' => 0,
+        'B' => 1,
+        'C' => 2,
+        'D' => 3,
+        'E' => 4,
+        'F' => 5,
+        'G' => 6,
+        'H' => 7,
+        _ => unreachable!(),
+    };
 
     println!("        {{");
     println!(
-        "            port: ({}/{}, pac: {}),",
+        "            port: ({}/{}, {}, {}),",
         port.id,
         port.id.to_lowercase(),
+        port_index,
         pac_module,
     );
     println!("            pins: [");
@@ -132,10 +144,10 @@ fn gen_pin(pin: &gpio::Pin) -> Result<()> {
 
 fn get_pin_reset_mode(pin: &gpio::Pin) -> Result<&'static str> {
     // Debug pins default to their debug function (AF0), everything else
-    // defaults to floating input.
+    // defaults to input.
     let mode = match (pin.port()?, pin.number()?) {
         ('A', 13) | ('A', 14) | ('A', 15) | ('B', 3) | ('B', 4) => "AF0<PushPull>",
-        _ => "Input<Floating>",
+        _ => "Input",
     };
     Ok(mode)
 }

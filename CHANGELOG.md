@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Implement `into_xxx` methods for partially erased pins ([#189])
+- Enable better GPIO internal resistor configuration ([#189])
+- Support for GPIO output slew rate configuration ([#189])
+- Support for GPIO interrupts ([#189])
+
+### Changed
+
+- The structure of `gpio.rs` is greatly changed. Generic `Pin` struct is used
+  for every GPIO pin now ([#189])
+
+### Breaking Changes
+
+- `into_afx` methods are splitted into `into_afx_push_pull` and
+  `into_afx_open_drain` ([#189])
+- GPIO internal resistor configuration is no longer encoded into pin typestate
+  in input mode ([#189])
+
 ## [v0.6.1] - 2020-12-10
 
 ### Changed
@@ -26,8 +45,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 - Impls for all SPI pins for all `stm32f302` sub-targets, `stm32f303`
   subtargets, `stm32f3x8` targets, `stm32f334`, and `stm32f373`
   ([#99])
-- SPI4 peripheral for supported
-  devices. ([#99])
+- SPI4 peripheral for supported devices. ([#99])
 - Support for I2C transfer of more than 255 bytes, and 0 byte write ([#154])
 - Support for HSE bypass and CSS ([#156])
 - Impls for missing I2C pin definitions ([#164])
@@ -262,13 +280,10 @@ let clocks = rcc
 
 - Support `stm32f303` device
 
+[#189]: https://github.com/stm32-rs/stm32f3xx-hal/pull/189
 [#184]: https://github.com/stm32-rs/stm32f3xx-hal/pull/184
 [#172]: https://github.com/stm32-rs/stm32f3xx-hal/pull/172
 [#170]: https://github.com/stm32-rs/stm32f3xx-hal/pull/170
-[#164]: https://github.com/stm32-rs/stm32f3xx-hal/pull/164
-[#164]: https://github.com/stm32-rs/stm32f3xx-hal/pull/164
-[#164]: https://github.com/stm32-rs/stm32f3xx-hal/pull/164
-[#164]: https://github.com/stm32-rs/stm32f3xx-hal/pull/164
 [#164]: https://github.com/stm32-rs/stm32f3xx-hal/pull/164
 [#156]: https://github.com/stm32-rs/stm32f3xx-hal/pull/156
 [#154]: https://github.com/stm32-rs/stm32f3xx-hal/pull/154
@@ -284,30 +299,24 @@ let clocks = rcc
 [#101]: https://github.com/stm32-rs/stm32f3xx-hal/pull/101
 [#100]: https://github.com/stm32-rs/stm32f3xx-hal/pull/100
 [#99]: https://github.com/stm32-rs/stm32f3xx-hal/pull/99
-[#99]: https://github.com/stm32-rs/stm32f3xx-hal/pull/99
-[#99]: https://github.com/stm32-rs/stm32f3xx-hal/pull/99
 [#98]: https://github.com/stm32-rs/stm32f3xx-hal/pull/98
 [#97]: https://github.com/stm32-rs/stm32f3xx-hal/pull/97
 [#91]: https://github.com/stm32-rs/stm32f3xx-hal/pull/91
-[#86]: https://github.com/stm32-rs/stm32f3xx-hal/pull/86
 [#86]: https://github.com/stm32-rs/stm32f3xx-hal/pull/86
 [#82]: https://github.com/stm32-rs/stm32f3xx-hal/pull/82
 [#75]: https://github.com/stm32-rs/stm32f3xx-hal/pull/75
 [#72]: https://github.com/stm32-rs/stm32f3xx-hal/pull/72
 [#70]: https://github.com/stm32-rs/stm32f3xx-hal/pull/70
 [#67]: https://github.com/stm32-rs/stm32f3xx-hal/pull/67
-[#67]: https://github.com/stm32-rs/stm32f3xx-hal/pull/67
 [#60]: https://github.com/stm32-rs/stm32f3xx-hal/pull/60
 [#58]: https://github.com/stm32-rs/stm32f3xx-hal/pull/58
 [#56]: https://github.com/stm32-rs/stm32f3xx-hal/pull/56
 [#52]: https://github.com/stm32-rs/stm32f3xx-hal/pull/52
 [#50]: https://github.com/stm32-rs/stm32f3xx-hal/pull/50
-[#50]: https://github.com/stm32-rs/stm32f3xx-hal/pull/50
 [#47]: https://github.com/stm32-rs/stm32f3xx-hal/pull/47
 [#42]: https://github.com/stm32-rs/stm32f3xx-hal/pull/42
 [#39]: https://github.com/stm32-rs/stm32f3xx-hal/pull/39
 [#35]: https://github.com/stm32-rs/stm32f3xx-hal/pull/18
-[#35]: https://github.com/stm32-rs/stm32f3xx-hal/pull/35
 [#34]: https://github.com/stm32-rs/stm32f3xx-hal/pull/34
 [#33]: https://github.com/stm32-rs/stm32f3xx-hal/pull/33
 [#31]: https://github.com/stm32-rs/stm32f3xx-hal/pull/33
@@ -320,14 +329,13 @@ let clocks = rcc
 [#16]: https://github.com/stm32-rs/stm32f3xx-hal/pull/16
 [#14]: https://github.com/stm32-rs/stm32f3xx-hal/pull/14
 [#12]: https://github.com/stm32-rs/stm32f3xx-hal/pull/12
-[#12]: https://github.com/stm32-rs/stm32f3xx-hal/pull/12
 [#11]: https://github.com/stm32-rs/stm32f3xx-hal/pull/11
 [#6]: https://github.com/stm32-rs/stm32f3xx-hal/pull/6
 [#4]: https://github.com/stm32-rs/stm32f3xx-hal/pull/4
 [#2]: https://github.com/stm32-rs/stm32f3xx-hal/pull/2
 
 [Unreleased]: https://github.com/stm32-rs/stm32f3xx-hal/compare/v0.6.1...HEAD
-[v0.6.0]: https://github.com/stm32-rs/stm32f3xx-hal/compare/v0.6.0...v0.6.1
+[v0.6.1]: https://github.com/stm32-rs/stm32f3xx-hal/compare/v0.6.0...v0.6.1
 [v0.6.0]: https://github.com/stm32-rs/stm32f3xx-hal/compare/v0.5.0...v0.6.0
 [v0.5.0]: https://github.com/stm32-rs/stm32f3xx-hal/compare/v0.4.3...v0.5.0
 [v0.4.3]: https://github.com/stm32-rs/stm32f3xx-hal/compare/v0.4.2...v0.4.3
