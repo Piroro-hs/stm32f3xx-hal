@@ -5,7 +5,7 @@
 #![no_std]
 #![no_main]
 
-use core::ops::Range;
+use core::{convert::TryInto, ops::Range};
 
 use panic_semihosting as _;
 
@@ -28,17 +28,23 @@ fn main() -> ! {
     let mut gpiob = dp.GPIOB.split(&mut rcc.ahb);
 
     // Configure I2C1
-    let mut pins = (
+    let mut scl =
         gpiob
             .pb6
-            .into_af4_open_drain(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl), // SCL
+            .into_af4_open_drain(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
+    let mut sda =
         gpiob
             .pb7
-            .into_af4_open_drain(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl), // SDA
+            .into_af4_open_drain(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
+    scl.internal_pull_up(&mut gpiob.pupdr, true);
+    sda.internal_pull_up(&mut gpiob.pupdr, true);
+    let mut i2c = hal::i2c::I2c::new(
+        dp.I2C1,
+        (scl, sda),
+        100u32.kHz().try_into().unwrap(),
+        clocks,
+        &mut rcc.apb1,
     );
-    pins.0.internal_pull_up(&mut gpiob.pupdr, true);
-    pins.1.internal_pull_up(&mut gpiob.pupdr, true);
-    let mut i2c = hal::i2c::I2c::new(dp.I2C1, pins, 100.khz(), clocks, &mut rcc.apb1);
 
     hprintln!("Start i2c scanning...").expect("Error using hprintln.");
     hprintln!().unwrap();

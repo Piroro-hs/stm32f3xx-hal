@@ -31,10 +31,10 @@ fn main() -> ! {
 
     let _clocks = rcc
         .cfgr
-        .use_hse(32.mhz())
-        .sysclk(32.mhz())
-        .pclk1(16.mhz())
-        .pclk2(16.mhz())
+        .use_hse(32u32.MHz())
+        .sysclk(32u32.MHz())
+        .pclk1(16u32.MHz())
+        .pclk2(16u32.MHz())
         .freeze(&mut flash.acr);
 
     // Configure CAN RX and TX pins (AF9)
@@ -64,7 +64,7 @@ fn main() -> ! {
     // Watchdog makes sure this gets restarted periodically if nothing happens
     let mut iwdg = IndependentWatchDog::new(dp.IWDG);
     iwdg.stop_on_debug(&dp.DBGMCU, true);
-    iwdg.start(100.ms());
+    iwdg.start(100u32.milliseconds());
 
     // Send an initial message!
     asm::delay(100_000);

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Added
 
+- Make `Clocks` `ppre1()` and `ppre2()` methods public, to get the current
+  Prescaler value. ([#210])
 - Implement `into_xxx` methods for partially erased pins ([#189])
 - Enable better GPIO internal resistor configuration ([#189])
 - Support for GPIO output slew rate configuration ([#189])
@@ -16,13 +18,45 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Changed
 
+- Added support for more CAN bit rates and modes. ([#186])
 - The structure of `gpio.rs` is greatly changed. Generic `Pin` struct is used
   for every GPIO pin now ([#189])
 
+### Fixed
+
+- Delay based on systick no longer panics ([#203]) for to high values
+  and support longer delays ([#208])
+
 ### Breaking Changes
 
+- Replace custom time based units with types defined in the [embedded-time][]
+  crate ([#192])
+- The `rcc` public API now expects time based units in `Megahertz`.
+  If the supplied frequency cannot be converted to `Hertz` the code
+  will `panic`. This will occur if the supplied `Megahertz` frequency
+  cannot fit into `u32::MAX` when converting to `Hertz` ([#192])
+
+```rust
+// The supplied frequencies must be in `MHz`.
+let clocks = rcc
+    .cfgr
+    .use_hse(8u32.MHz())
+    .hclk(48u32.MHz())
+    .sysclk(48u32.MHz())
+    .pclk1(12u32.MHz())
+    .pclk2(12u32.MHz())
+```
+
+- Bump dependencies: ([#211])
+  - `stm32f3` dependency to 0.13
+  - `nb` to 1
+  - `cortex-m` to 0.7
+  - `stm32-usbd` to 0.6
+  - `defmt` to 0.2
 - `into_afx` methods are splitted into `into_afx_push_pull` and
   `into_afx_open_drain` ([#189])
+- GPIO output mode (`PushPull` or `OpenDrain`) is encoded into pin typestate
+  in alternate function mode ([#189])
 - GPIO internal resistor configuration is no longer encoded into pin typestate
   in input mode ([#189])
 
@@ -60,9 +94,6 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
     The support of this feature is subject to change as the development
     of [defmt][] is advancing.
 
-[defmt]: https://github.com/knurling-rs/defmt
-[filter]: https://defmt.ferrous-systems.com/filtering.html
-
 ### Changed
 
 - Introduced auto-generated GPIO mappings based on the STM32CubeMX database
@@ -73,8 +104,6 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 - Fixed [#151] not being able to generate 72 MHz HCLK for stm32f303xc devices
   ([#152])
 - Wrong I2C clock source ([#164])
-
-[#151]: https://github.com/stm32-rs/stm32f3xx-hal/issues/151
 
 ### Breaking Changes
 
@@ -280,7 +309,17 @@ let clocks = rcc
 
 - Support `stm32f303` device
 
+[embedded-time]: https://github.com/FluenTech/embedded-time/
+[defmt]: https://github.com/knurling-rs/defmt
+[filter]: https://defmt.ferrous-systems.com/filtering.html
+
+[#211]: https://github.com/stm32-rs/stm32f3xx-hal/pull/211
+[#210]: https://github.com/stm32-rs/stm32f3xx-hal/pull/210
+[#208]: https://github.com/stm32-rs/stm32f3xx-hal/pull/208
+[#203]: https://github.com/stm32-rs/stm32f3xx-hal/issues/203
+[#192]: https://github.com/stm32-rs/stm32f3xx-hal/pull/192
 [#189]: https://github.com/stm32-rs/stm32f3xx-hal/pull/189
+[#186]: https://github.com/stm32-rs/stm32f3xx-hal/pull/186
 [#184]: https://github.com/stm32-rs/stm32f3xx-hal/pull/184
 [#172]: https://github.com/stm32-rs/stm32f3xx-hal/pull/172
 [#170]: https://github.com/stm32-rs/stm32f3xx-hal/pull/170

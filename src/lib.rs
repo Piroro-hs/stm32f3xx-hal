@@ -43,6 +43,7 @@
 */
 #![no_std]
 #![allow(non_camel_case_types)]
+#![allow(clippy::upper_case_acronyms)]
 #![warn(missing_docs)]
 #![deny(macro_use_extern_crate)]
 
@@ -144,29 +145,27 @@ cfg_if::cfg_if! {
         pub use nb;
         pub use nb::block;
 
+        pub use embedded_time as time;
+
         /// Peripheral access
-        #[cfg(any(feature = "stm32f301", feature = "stm32f318"))]
+        #[cfg(feature = "svd-f301")]
         pub use stm32f3::stm32f301 as pac;
 
         /// Peripheral access
-        #[cfg(feature = "stm32f302")]
+        #[cfg(feature = "svd-f302")]
         pub use stm32f3::stm32f302 as pac;
 
         /// Peripheral access
-        #[cfg(feature = "stm32f303")]
+        #[cfg(feature = "svd-f303")]
         pub use stm32f3::stm32f303 as pac;
 
         /// Peripheral access
-        #[cfg(any(feature = "stm32f373", feature = "stm32f378"))]
+        #[cfg(feature = "svd-f373")]
         pub use stm32f3::stm32f373 as pac;
 
         /// Peripheral access
-        #[cfg(feature = "stm32f334")]
+        #[cfg(feature = "svd-f3x4")]
         pub use stm32f3::stm32f3x4 as pac;
-
-        /// Peripheral access
-        #[cfg(any(feature = "stm32f328", feature = "stm32f358", feature = "stm32f398"))]
-        pub use stm32f3::stm32f3x8 as pac;
 
         /// Peripheral access
         #[deprecated(since = "0.5.0", note = "please use `pac` instead")]
@@ -193,7 +192,6 @@ cfg_if::cfg_if! {
         pub mod serial;
         pub mod spi;
         pub mod syscfg;
-        pub mod time;
         pub mod timer;
         #[cfg(all(
             feature = "stm32-usbd",

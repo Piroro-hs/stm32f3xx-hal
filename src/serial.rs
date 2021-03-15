@@ -7,7 +7,7 @@ use crate::{
     hal::{blocking, serial},
     pac::{USART1, USART2, USART3},
     rcc::{Clocks, APB1, APB2},
-    time::Bps,
+    time::rate::*,
 };
 
 use cfg_if::cfg_if;
@@ -48,44 +48,44 @@ pub unsafe trait TxPin<USART> {}
 /// RX pin - DO NOT IMPLEMENT THIS TRAIT
 pub unsafe trait RxPin<USART> {}
 
-unsafe impl<OTYPE> TxPin<USART1> for gpioa::PA9<AF7<OTYPE>> {}
-unsafe impl<OTYPE> TxPin<USART1> for gpiob::PB6<AF7<OTYPE>> {}
-unsafe impl<OTYPE> TxPin<USART1> for gpioc::PC4<AF7<OTYPE>> {}
-unsafe impl<OTYPE> RxPin<USART1> for gpioa::PA10<AF7<OTYPE>> {}
-unsafe impl<OTYPE> RxPin<USART1> for gpiob::PB7<AF7<OTYPE>> {}
-unsafe impl<OTYPE> RxPin<USART1> for gpioc::PC5<AF7<OTYPE>> {}
+unsafe impl<Otype> TxPin<USART1> for gpioa::PA9<AF7<Otype>> {}
+unsafe impl<Otype> TxPin<USART1> for gpiob::PB6<AF7<Otype>> {}
+unsafe impl<Otype> TxPin<USART1> for gpioc::PC4<AF7<Otype>> {}
+unsafe impl<Otype> RxPin<USART1> for gpioa::PA10<AF7<Otype>> {}
+unsafe impl<Otype> RxPin<USART1> for gpiob::PB7<AF7<Otype>> {}
+unsafe impl<Otype> RxPin<USART1> for gpioc::PC5<AF7<Otype>> {}
 
-unsafe impl<OTYPE> TxPin<USART2> for gpioa::PA2<AF7<OTYPE>> {}
-unsafe impl<OTYPE> TxPin<USART2> for gpiob::PB3<AF7<OTYPE>> {}
-unsafe impl<OTYPE> RxPin<USART2> for gpioa::PA3<AF7<OTYPE>> {}
-unsafe impl<OTYPE> RxPin<USART2> for gpiob::PB4<AF7<OTYPE>> {}
+unsafe impl<Otype> TxPin<USART2> for gpioa::PA2<AF7<Otype>> {}
+unsafe impl<Otype> TxPin<USART2> for gpiob::PB3<AF7<Otype>> {}
+unsafe impl<Otype> RxPin<USART2> for gpioa::PA3<AF7<Otype>> {}
+unsafe impl<Otype> RxPin<USART2> for gpiob::PB4<AF7<Otype>> {}
 
-unsafe impl<OTYPE> TxPin<USART3> for gpiob::PB10<AF7<OTYPE>> {}
-unsafe impl<OTYPE> TxPin<USART3> for gpioc::PC10<AF7<OTYPE>> {}
-unsafe impl<OTYPE> RxPin<USART3> for gpioc::PC11<AF7<OTYPE>> {}
+unsafe impl<Otype> TxPin<USART3> for gpiob::PB10<AF7<Otype>> {}
+unsafe impl<Otype> TxPin<USART3> for gpioc::PC10<AF7<Otype>> {}
+unsafe impl<Otype> RxPin<USART3> for gpioc::PC11<AF7<Otype>> {}
 
 cfg_if! {
     if #[cfg(any(feature = "gpio-f303", feature = "gpio-f303e", feature = "gpio-f373"))] {
         use crate::gpio::{gpiod, gpioe};
 
-        unsafe impl<OTYPE> TxPin<USART1> for gpioe::PE0<AF7<OTYPE>> {}
-        unsafe impl<OTYPE> RxPin<USART1> for gpioe::PE1<AF7<OTYPE>> {}
+        unsafe impl<Otype> TxPin<USART1> for gpioe::PE0<AF7<Otype>> {}
+        unsafe impl<Otype> RxPin<USART1> for gpioe::PE1<AF7<Otype>> {}
 
-        unsafe impl<OTYPE> TxPin<USART2> for gpiod::PD5<AF7<OTYPE>> {}
-        unsafe impl<OTYPE> RxPin<USART2> for gpiod::PD6<AF7<OTYPE>> {}
+        unsafe impl<Otype> TxPin<USART2> for gpiod::PD5<AF7<Otype>> {}
+        unsafe impl<Otype> RxPin<USART2> for gpiod::PD6<AF7<Otype>> {}
 
-        unsafe impl<OTYPE> TxPin<USART3> for gpiod::PD8<AF7<OTYPE>> {}
-        unsafe impl<OTYPE> RxPin<USART3> for gpiod::PD9<AF7<OTYPE>> {}
-        unsafe impl<OTYPE> RxPin<USART3> for gpioe::PE15<AF7<OTYPE>> {}
+        unsafe impl<Otype> TxPin<USART3> for gpiod::PD8<AF7<Otype>> {}
+        unsafe impl<Otype> RxPin<USART3> for gpiod::PD9<AF7<Otype>> {}
+        unsafe impl<Otype> RxPin<USART3> for gpioe::PE15<AF7<Otype>> {}
     }
 }
 
 cfg_if! {
     if #[cfg(not(feature = "gpio-f373"))] {
-        unsafe impl<OTYPE> TxPin<USART2> for gpioa::PA14<AF7<OTYPE>> {}
-        unsafe impl<OTYPE> RxPin<USART2> for gpioa::PA15<AF7<OTYPE>> {}
+        unsafe impl<Otype> TxPin<USART2> for gpioa::PA14<AF7<Otype>> {}
+        unsafe impl<Otype> RxPin<USART2> for gpioa::PA15<AF7<Otype>> {}
 
-        unsafe impl<OTYPE> RxPin<USART3> for gpiob::PB11<AF7<OTYPE>> {}
+        unsafe impl<Otype> RxPin<USART3> for gpiob::PB11<AF7<Otype>> {}
     }
 }
 
@@ -115,7 +115,7 @@ macro_rules! hal {
                 pub fn $usartX(
                     usart: $USARTX,
                     pins: (TX, RX),
-                    baud_rate: Bps,
+                    baud_rate: Baud,
                     clocks: Clocks,
                     apb: &mut $APB,
                 ) -> Self
@@ -128,7 +128,7 @@ macro_rules! hal {
                     apb.rstr().modify(|_, w| w.$usartXrst().set_bit());
                     apb.rstr().modify(|_, w| w.$usartXrst().clear_bit());
 
-                    let brr = clocks.$pclkX().0 / baud_rate.0;
+                    let brr = clocks.$pclkX().0 / *baud_rate.integer();
                     crate::assert!(brr >= 16, "impossible baud rate");
                     // NOTE(write): uses all bits of this register.
                     usart.brr.write(|w| unsafe { w.bits(brr) });

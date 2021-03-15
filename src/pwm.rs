@@ -16,7 +16,7 @@
 
   ```
     // (Other imports omitted)
-    use stm32f3xx-hal::pwm::tim3;
+    use stm32f3xx-hal::{pwm::tim3, time::rate::*};
 
     let dp = stm32f303::Peripherals::take().unwrap();
 
@@ -25,9 +25,9 @@
     let clocks = rcc.cfgr.freeze(&mut flash.acr);
 
     // Set the resolution of our duty cycle to 9000 and our period to
-    // 50hz.
+    // 50Hz.
     let mut (c1_no_pins, _, _, c4_no_pins) =
-        tim3(device.TIM3, 9000, 50.hz(), clocks);
+        tim3(device.TIM3, 9000, 50.Hz(), clocks);
   ```
 
   In this case, we're only going to use channel 1 and channel 4.
@@ -65,7 +65,7 @@
     ch4.enable();
   ```
 
-  All three pins will output a 50hz period. PA6 and PB4 will share a
+  All three pins will output a 50Hz period. PA6 and PB4 will share a
   duty cycle, but the duty cycle for PB1 can be controlled
   independently.
 
@@ -84,7 +84,7 @@
 
   ```
     // (Other imports omitted)
-    use stm32f3xx-hal::pwm::tim16;
+    use stm32f3xx-hal::{pwm::tim16, time::rate::*};
 
     let dp = stm32f303::Peripherals::take().unwrap();
 
@@ -93,8 +93,8 @@
     let clocks = rcc.cfgr.freeze(&mut flash.acr);
 
     // Set the resolution of our duty cycle to 9000 and our period to
-    // 50hz.
-    let mut c1_no_pins = tim16(device.TIM3, 9000, 50.hz(), clocks);
+    // 50Hz.
+    let mut c1_no_pins = tim16(device.TIM3, 9000, 50.Hz(), clocks);
   ```
 
   ## Complementary timers
@@ -109,7 +109,7 @@
 
   ```
     // (Other imports omitted)
-    use stm32f3xx-hal::pwm::tim1;
+    use stm32f3xx-hal::{pwm::tim1, time::rate::*};
 
     let dp = stm32f303::Peripherals::take().unwrap();
 
@@ -118,8 +118,8 @@
     let clocks = rcc.cfgr.freeze(&mut flash.acr);
 
     // Set the resolution of our duty cycle to 9000 and our period to
-    // 50hz.
-    let mut (ch1_no_pins, _, _, _) = tim1(device.TIM3, 9000, 50.hz(), clocks);
+    // 50Hz.
+    let mut (ch1_no_pins, _, _, _) = tim1(device.TIM3, 9000, 50.Hz(), clocks);
 
     let mut gpioa = dp.GPIOB.split(&mut rcc.ahb);
     let pa7 = gpioa.pa7.into_af6(&mut gpioa.moder, &mut gpioa.afrl);
@@ -152,7 +152,7 @@
 
   A usage example can be found at [examples/pwm.rs]
 
-  [examples/pwm.rs]: https://github.com/stm32-rs/stm32f3xx-hal/blob/v0.6.0/examples/pwm.rs
+  [examples/pwm.rs]: https://github.com/stm32-rs/stm32f3xx-hal/blob/v0.6.1/examples/pwm.rs
 */
 
 use core::marker::PhantomData;
@@ -162,7 +162,7 @@ use crate::{
     hal::PwmPin,
     pac::{RCC, TIM15, TIM16, TIM17, TIM2},
     rcc::Clocks,
-    time::Hertz,
+    time::rate::*,
 };
 
 #[cfg(any(
@@ -285,7 +285,7 @@ macro_rules! pwm_timer_private {
             // It might make sense to move into the clocks as a crate-only property.
             // TODO: ppre1 is used in timer.rs (never ppre2), should this be dynamic?
             let clock_freq = clocks.$pclkz().0 * if clocks.$pprez() == 1 { 1 } else { 2 };
-            let prescale_factor = clock_freq / res as u32 / freq.0;
+            let prescale_factor = clock_freq / res as u32 / *freq.integer();
             // NOTE(write): uses all bits of this register.
             tim.psc.write(|w| w.psc().bits(prescale_factor as u16 - 1));
 
@@ -353,9 +353,9 @@ macro_rules! pwm_channel_pin {
             /// is called.
             ///
             /// The pin is consumed and cannot be returned.
-            pub fn $output_to_pzv<OTYPE>(
+            pub fn $output_to_pzv<Otype>(
                 self,
-                _p: $gpioz::$PZv<gpio::$AFw<OTYPE>>,
+                _p: $gpioz::$PZv<gpio::$AFw<Otype>>,
             ) -> PwmChannel<$TIMx_CHy, $resulting_state> {
                 unsafe {
                     (*$TIMx::ptr()).$ccmrz_output().modify(|_, w| {
@@ -382,9 +382,9 @@ macro_rules! pwm_channel_pin {
             /// can be used (as long as they are compatible).
             ///
             /// The pin is consumed and cannot be returned.
-            pub fn $output_to_pzv<OTYPE>(
+            pub fn $output_to_pzv<Otype>(
                 self,
-                _p: $gpioz::$PZv<gpio::$AFw<OTYPE>>,
+                _p: $gpioz::$PZv<gpio::$AFw<Otype>>,
             ) -> PwmChannel<$TIMx_CHy, $resulting_state> {
                 self
             }
@@ -1556,7 +1556,7 @@ macro_rules! tim20 {
 
         // Channels
         // TODO: stm32f3 doesn't suppport registers for all 4 channels
-        pwm_pin_for_pwm_n_channel!(TIM20, TIM20_CH1, u16, cc1e, cc1ne, ccr1, ccr1);
+        pwm_pin_for_pwm_n_channel!(TIM20, TIM20_CH1, u16, cc1e, cc1ne, ccr1, ccr);
 
         //Pins
         pwm_channel1_pin!(TIM20, TIM20_CH1, output_to_pe2, gpioe::PE2<AF6>);
