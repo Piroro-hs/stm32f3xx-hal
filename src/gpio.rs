@@ -66,11 +66,7 @@
 //! [examples/toggle.rs]: https://github.com/stm32-rs/stm32f3xx-hal/blob/v0.6.1/examples/toggle.rs
 //! [atomics]: https://doc.rust-lang.org/core/sync/atomic/index.html
 
-use core::{
-    convert::Infallible,
-    marker::PhantomData,
-    sync::atomic::{AtomicU32, Ordering},
-};
+use core::{convert::Infallible, marker::PhantomData};
 
 use crate::{
     hal::digital::v2::OutputPin,
@@ -659,15 +655,16 @@ macro_rules! af {
 
 af!([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
 
+extern "C" {
+    fn volatile_atomic_bic_or(ptr: *mut u32, bic: u32, or: u32);
+}
+
 /// Modify specific index of array-like register atomically
-#[inline(never)]
-fn atomic_modify_at(reg: &AtomicU32, bitwidth: u8, index: u8, value: u32) {
-    let mask = !(u32::MAX >> (32 - bitwidth) << (bitwidth * index));
+#[inline]
+unsafe fn atomic_modify_at(reg: *mut u32, bitwidth: u8, index: u8, value: u32) {
+    let mask_comp = u32::MAX >> (32 - bitwidth) << (bitwidth * index);
     let value = value << (bitwidth * index);
-    reg.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-        Some(v & mask | value)
-    })
-    .unwrap();
+    volatile_atomic_bic_or(reg, mask_comp, value);
 }
 
 macro_rules! gpio_reg_trait {
@@ -680,9 +677,9 @@ macro_rules! gpio_reg_trait {
         $(
             #[inline]
             fn $fn(&self, i: u8) {
-                let $xr = unsafe { &*(&self.$xr as *const _ as *const AtomicU32) };
+                let $xr = &self.$xr as *const _ as *mut u32;
                 let value = crate::pac::$gpioy::$xr::$enum::$VARIANT as u32;
-                atomic_modify_at($xr, $bitwidth, i, value);
+                unsafe { atomic_modify_at($xr, $bitwidth, i, value) };
             }
         )+
     };
@@ -745,12 +742,12 @@ macro_rules! gpio_trait {
                 #[inline]
                 fn afx(&self, i: u8, x: u8) {
                     let (afr, index) = if i < 8 {
-                        (unsafe { &*(&self.afrl as *const _ as *const AtomicU32) }, i)
+                        (&self.afrl as *const _ as *mut u32, i)
                     } else {
-                        (unsafe { &*(&self.afrh as *const _ as *const AtomicU32) }, i - 8)
+                        (&self.afrh as *const _ as *mut u32, i - 8)
                     };
                     let bitwidth = 4;
-                    atomic_modify_at(afr, bitwidth, index, x as u32);
+                    unsafe { atomic_modify_at(afr, bitwidth, index, x as u32) };
                 }
             }
         )+
