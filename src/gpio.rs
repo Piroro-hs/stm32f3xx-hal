@@ -7,7 +7,7 @@
 //! let dp = pac::Peripherals::take().unwrap();
 //! let rcc = dp.RCC.constrain();
 //!
-//! let mut gpioa = dp.GPIOA.split(&mut rcc.ahb);
+//! let gpioa = dp.GPIOA.split(&mut rcc.ahb);
 //! ```
 //!
 //! The resulting [Parts](gpioa::Parts) struct contains one field for each pin. Every pin type is a
